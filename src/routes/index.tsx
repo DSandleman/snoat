@@ -74,7 +74,10 @@ function Index() {
               Sikkerhet
             </a>
           </nav>
-          <button className="primary-btn px-5 py-2.5 font-label text-label-md">Bli med i beta</button>
+          <div className="flex items-center gap-2">
+            <button className="ghost-btn px-4 py-2.5 font-label text-label-md">Logg inn</button>
+            <button className="primary-btn px-5 py-2.5 font-label text-label-md">Registrer deg</button>
+          </div>
         </div>
       </header>
 
