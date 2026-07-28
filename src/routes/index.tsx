@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { SnoatLogo } from "@/components/SnoatLogo";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -169,7 +170,7 @@ function Index() {
               <p className="mb-8 font-body text-body-md text-on-surface-variant">
                 For testprosjekter og porteføljer.
               </p>
-              <button className="ghost-btn w-full border border-outline py-3 font-label text-label-md">
+              <button className="ghost-btn w-full bg-surface-variant/60 py-3 font-label text-label-md">
                 Start gratis
               </button>
             </div>
@@ -193,11 +194,11 @@ function Index() {
         </section>
       </main>
 
-      <footer id="sikkerhet" className="border-t border-border">
+      <footer id="sikkerhet" className="shadow-[0_-8px_30px_-24px_oklch(0_0_0/0.9)]">
         <div className="mx-auto flex max-w-container-max flex-col items-center justify-between gap-4 px-margin-mobile py-10 text-center md:flex-row md:px-gutter md:text-left">
-          <span className="font-display text-headline-md text-on-surface">nordsky</span>
+          <SnoatLogo />
           <p className="font-body text-body-md text-on-surface-variant">
-            Bygget i Norge. Data lagret i Norge. © {new Date().getFullYear()}
+            Snoat — bygget i Norge. Data lagret i Norge. © {new Date().getFullYear()}
           </p>
         </div>
       </footer>
