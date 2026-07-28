@@ -92,12 +92,12 @@ function Index() {
             Norges lynraske infrastruktur for moderne apper
           </h1>
           <p className="mx-auto mb-stack-lg max-w-2xl font-body text-body-lg text-on-surface-variant">
-            Deploy appene dine på helnorsk infrastruktur. Lynrask ytelse, full datasuverenitet og
-            sømløs utvikleropplevelse.
+            Deploy appene dine på helnorsk infrastruktur. GDPR-etterlevelse i praksis, all data
+            lagret og driftet i norske datasentre, lynrask ytelse og sømløs utvikleropplevelse.
           </p>
           <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
             <button className="primary-btn w-full px-8 py-4 font-label text-label-md sm:w-auto">
-              Bli med i lukket beta
+              Registrer deg
             </button>
             <button className="ghost-btn flex w-full items-center justify-center gap-2 px-8 py-4 font-label text-label-md sm:w-auto">
               Les om sikkerhet
