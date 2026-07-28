@@ -88,19 +88,12 @@ function Index() {
             <div className="h-[800px] w-[800px] rounded-full bg-primary blur-[150px] mix-blend-screen" />
           </div>
 
-          <div className="mx-auto mb-6 inline-flex items-center gap-2 rounded-full bg-surface-container px-4 py-2 shadow-[0_8px_24px_-16px_oklch(0_0_0/0.9)]">
-            <span className="material-symbols-outlined icon-sm text-primary">verified_user</span>
-            <span className="font-label text-label-md text-on-surface-variant">
-              GDPR-etterlevende · Data lagret i norsk datasenter
-            </span>
-          </div>
-
           <h1 className="mx-auto mb-stack-md max-w-4xl font-display text-display text-on-background">
             Norges lynraske infrastruktur for moderne apper
           </h1>
           <p className="mx-auto mb-stack-lg max-w-2xl font-body text-body-lg text-on-surface-variant">
-            Deploy appene dine på helnorsk infrastruktur. GDPR-etterlevelse i praksis, all data
-            lagret og driftet i norske datasentre, lynrask ytelse og sømløs utvikleropplevelse.
+            Deploy appene dine på helnorsk infrastruktur. 100% GDPR-etterlevende — all data
+            lagret og driftet i norske datasentre, med lynrask ytelse og sømløs utvikleropplevelse.
           </p>
           <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
             <button className="primary-btn w-full px-8 py-4 font-label text-label-md sm:w-auto">
