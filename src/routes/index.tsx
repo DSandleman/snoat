@@ -1,15 +1,16 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { SnoatLogo } from "@/components/SnoatLogo";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Norsk skyinfrastruktur for moderne apper" },
+      { title: "Snoat — norsk skyinfrastruktur for moderne apper" },
       {
         name: "description",
         content:
           "Deploy appene dine på helnorsk infrastruktur. Lynrask ytelse, full datasuverenitet og sømløs utvikleropplevelse.",
       },
-      { property: "og:title", content: "Norsk skyinfrastruktur for moderne apper" },
+      { property: "og:title", content: "Snoat — norsk skyinfrastruktur for moderne apper" },
       {
         property: "og:description",
         content: "Lynrask ytelse, full datasuverenitet og sømløs utvikleropplevelse.",
@@ -59,9 +60,9 @@ const features = [
 function Index() {
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-border/60 bg-background/70 backdrop-blur-xl">
+      <header className="fixed inset-x-0 top-0 z-50 bg-background/70 shadow-[0_8px_30px_-20px_oklch(0_0_0/0.9)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-container-max items-center justify-between px-margin-mobile py-4 md:px-gutter">
-          <span className="font-display text-headline-md text-on-surface">nordsky</span>
+          <SnoatLogo />
           <nav className="hidden items-center gap-8 md:flex">
             <a href="#funksjoner" className="font-label text-label-md text-on-surface-variant transition-colors hover:text-on-surface">
               Funksjoner
@@ -83,10 +84,7 @@ function Index() {
           <div className="pointer-events-none absolute inset-0 z-[-1] flex items-center justify-center opacity-20">
             <div className="h-[800px] w-[800px] rounded-full bg-primary blur-[150px] mix-blend-screen" />
           </div>
-          <div className="mb-8 inline-flex items-center gap-2 rounded-full bg-surface-variant px-4 py-2">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-secondary" />
-            <span className="font-label text-label-md text-on-surface-variant">Lukket beta er åpen</span>
-          </div>
+
           <h1 className="mx-auto mb-stack-md max-w-4xl font-display text-display text-on-background">
             Norges lynraske infrastruktur for moderne apper
           </h1>
@@ -172,7 +170,7 @@ function Index() {
               <p className="mb-8 font-body text-body-md text-on-surface-variant">
                 For testprosjekter og porteføljer.
               </p>
-              <button className="ghost-btn w-full border border-outline py-3 font-label text-label-md">
+              <button className="ghost-btn w-full bg-surface-variant/60 py-3 font-label text-label-md">
                 Start gratis
               </button>
             </div>
@@ -196,11 +194,11 @@ function Index() {
         </section>
       </main>
 
-      <footer id="sikkerhet" className="border-t border-border">
+      <footer id="sikkerhet" className="shadow-[0_-8px_30px_-24px_oklch(0_0_0/0.9)]">
         <div className="mx-auto flex max-w-container-max flex-col items-center justify-between gap-4 px-margin-mobile py-10 text-center md:flex-row md:px-gutter md:text-left">
-          <span className="font-display text-headline-md text-on-surface">nordsky</span>
+          <SnoatLogo />
           <p className="font-body text-body-md text-on-surface-variant">
-            Bygget i Norge. Data lagret i Norge. © {new Date().getFullYear()}
+            Snoat — bygget i Norge. Data lagret i Norge. © {new Date().getFullYear()}
           </p>
         </div>
       </footer>
