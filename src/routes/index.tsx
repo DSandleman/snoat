@@ -100,7 +100,7 @@ function Index() {
             </button>
             <button className="ghost-btn flex w-full items-center justify-center gap-2 px-8 py-4 font-label text-label-md sm:w-auto">
               Les om sikkerhet
-              <span className="material-symbols-outlined text-sm">arrow_forward</span>
+              <span className="material-symbols-outlined icon-sm">arrow_forward</span>
             </button>
           </div>
         </section>
@@ -136,13 +136,13 @@ function Index() {
                 )}
                 {f.watermark && (
                   <div className="absolute right-0 top-0 p-8 opacity-20 transition-opacity duration-500 group-hover:opacity-40">
-                    <span className="material-symbols-outlined text-8xl text-secondary">
+                    <span className="material-symbols-outlined icon-xl text-secondary">
                       {f.watermark}
                     </span>
                   </div>
                 )}
                 <div className="relative z-10">
-                  <span className={`material-symbols-outlined mb-4 text-4xl ${f.tone}`}>
+                  <span className={`material-symbols-outlined icon-lg mb-4 ${f.tone}`}>
                     {f.icon}
                   </span>
                   <h3

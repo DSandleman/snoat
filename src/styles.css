@@ -165,8 +165,9 @@
   }
 }
 
-/* Unlayered so it overrides Google's font-size, then utilities can size icons. */
-.material-symbols-outlined {
-  font-size: inherit;
-  line-height: 1;
-}
+/* Unlayered: Google's Material Symbols stylesheet is unlayered and would
+   otherwise beat Tailwind's layered font-size utilities. */
+.material-symbols-outlined { line-height: 1; }
+.icon-sm { font-size: 1rem; }
+.icon-lg { font-size: 2.25rem; }
+.icon-xl { font-size: 6rem; }
