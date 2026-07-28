@@ -164,3 +164,9 @@
     background-color: var(--surface-variant);
   }
 }
+
+/* Unlayered so it overrides Google's font-size, then utilities can size icons. */
+.material-symbols-outlined {
+  font-size: inherit;
+  line-height: 1;
+}
