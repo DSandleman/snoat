@@ -59,9 +59,9 @@ const features = [
 function Index() {
   return (
     <div className="flex min-h-screen flex-col overflow-x-hidden">
-      <header className="fixed inset-x-0 top-0 z-50 border-b border-border/60 bg-background/70 backdrop-blur-xl">
+      <header className="fixed inset-x-0 top-0 z-50 bg-background/70 shadow-[0_8px_30px_-20px_oklch(0_0_0/0.9)] backdrop-blur-xl">
         <div className="mx-auto flex max-w-container-max items-center justify-between px-margin-mobile py-4 md:px-gutter">
-          <span className="font-display text-headline-md text-on-surface">nordsky</span>
+          <SnoatLogo />
           <nav className="hidden items-center gap-8 md:flex">
             <a href="#funksjoner" className="font-label text-label-md text-on-surface-variant transition-colors hover:text-on-surface">
               Funksjoner
@@ -83,10 +83,7 @@ function Index() {
           <div className="pointer-events-none absolute inset-0 z-[-1] flex items-center justify-center opacity-20">
             <div className="h-[800px] w-[800px] rounded-full bg-primary blur-[150px] mix-blend-screen" />
           </div>
-          <div className="mb-8 inline-flex items-center gap-2 rounded-full bg-surface-variant px-4 py-2">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-secondary" />
-            <span className="font-label text-label-md text-on-surface-variant">Lukket beta er åpen</span>
-          </div>
+
           <h1 className="mx-auto mb-stack-md max-w-4xl font-display text-display text-on-background">
             Norges lynraske infrastruktur for moderne apper
           </h1>
