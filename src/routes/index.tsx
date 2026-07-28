@@ -4,13 +4,13 @@ import { SnoatLogo } from "@/components/SnoatLogo";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Norsk skyinfrastruktur for moderne apper" },
+      { title: "Snoat — norsk skyinfrastruktur for moderne apper" },
       {
         name: "description",
         content:
           "Deploy appene dine på helnorsk infrastruktur. Lynrask ytelse, full datasuverenitet og sømløs utvikleropplevelse.",
       },
-      { property: "og:title", content: "Norsk skyinfrastruktur for moderne apper" },
+      { property: "og:title", content: "Snoat — norsk skyinfrastruktur for moderne apper" },
       {
         property: "og:description",
         content: "Lynrask ytelse, full datasuverenitet og sømløs utvikleropplevelse.",
