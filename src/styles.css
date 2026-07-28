@@ -85,10 +85,10 @@
   --card-foreground: oklch(0.96 0.005 250);
   --popover: oklch(0.21 0.019 261);
   --popover-foreground: oklch(0.96 0.005 250);
-  --primary: oklch(0.72 0.16 255);
-  --primary-foreground: oklch(0.16 0.03 260);
-  --primary-container: oklch(0.38 0.12 258);
-  --on-primary-container: oklch(0.95 0.02 255);
+  --primary: oklch(0.86 0.16 197);
+  --primary-foreground: oklch(0.18 0.03 210);
+  --primary-container: oklch(0.42 0.1 200);
+  --on-primary-container: oklch(0.95 0.03 197);
   --secondary: oklch(0.82 0.16 165);
   --secondary-foreground: oklch(0.18 0.03 200);
   --secondary-fixed: oklch(0.86 0.13 168);
@@ -102,12 +102,12 @@
   --border: oklch(1 0 0 / 10%);
   --outline: oklch(1 0 0 / 18%);
   --input: oklch(1 0 0 / 14%);
-  --ring: oklch(0.72 0.16 255);
+  --ring: oklch(0.86 0.16 197);
 }
 
 @layer base {
   * {
-    border-color: var(--color-border);
+    border-color: transparent;
   }
 
   body {
@@ -119,14 +119,14 @@
 
 @utility floating-card {
   border-radius: var(--radius-2xl);
-  background: color-mix(in oklab, var(--surface) 88%, transparent);
-  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--surface) 92%, transparent);
   box-shadow:
-    0 1px 0 0 oklch(1 0 0 / 6%) inset,
-    0 24px 60px -30px oklch(0 0 0 / 70%);
+    0 1px 0 0 oklch(1 0 0 / 5%) inset,
+    0 2px 8px -2px oklch(0 0 0 / 45%),
+    0 28px 70px -35px oklch(0 0 0 / 85%);
   transition:
     transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1),
-    border-color 0.4s ease;
+    box-shadow 0.4s ease;
 }
 
 @utility primary-btn {
@@ -152,7 +152,10 @@
 @layer components {
   .floating-card:hover {
     transform: translateY(-4px);
-    border-color: var(--outline);
+    box-shadow:
+      0 1px 0 0 oklch(1 0 0 / 8%) inset,
+      0 4px 14px -2px oklch(0 0 0 / 50%),
+      0 40px 90px -40px oklch(0 0 0 / 90%);
   }
 
   .primary-btn:hover {
