@@ -9,8 +9,13 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
+import { AuthProvider } from "@/lib/auth";
 import appCss from "../styles.css?url";
-import { reportLovableError } from "../lib/lovable-error-reporting";
+
+// Initialize i18n
+import "../lib/i18n";
+import { I18nextProvider } from "react-i18next";
+import i18n from "../lib/i18n";
 
 function NotFoundComponent() {
   return (
@@ -37,9 +42,6 @@ function NotFoundComponent() {
 function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   console.error(error);
   const router = useRouter();
-  useEffect(() => {
-    reportLovableError(error, { boundary: "tanstack_root_error_component" });
-  }, [error]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -77,14 +79,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      { title: "Snoat" },
+      {
+        name: "description",
+        content: "Norsk skyinfrastruktur for moderne apper. Deploy på helnorsk infrastruktur.",
+      },
+      { name: "author", content: "Frostbyte Group AS" },
+      { property: "og:title", content: "Snoat" },
+      {
+        property: "og:description",
+        content: "Norsk skyinfrastruktur for moderne apper.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
-      { name: "twitter:site", content: "@Lovable" },
     ],
     links: [
       { rel: "preconnect", href: "https://fonts.googleapis.com" },
@@ -101,9 +108,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
         rel: "stylesheet",
         href: appCss,
       },
-      { rel: "icon", href: "/favicon.ico", type: "image/x-icon" },
+      { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
     ],
-
   }),
   shellComponent: RootShell,
   component: RootComponent,
@@ -113,7 +119,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang={i18n.language || "en"} suppressHydrationWarning>
       <head>
         <HeadContent />
       </head>
@@ -128,10 +134,31 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
+  // Detekter språk i nettleseren KUN etter montering for å forhindre SSR hydration mismatch.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem("i18nextLng");
+    const browserLang =
+      navigator.language?.startsWith("no") ||
+      navigator.language?.startsWith("nb") ||
+      navigator.language?.startsWith("nn")
+        ? "no"
+        : "en";
+
+    const targetLang = saved || browserLang;
+    if (targetLang && i18n.language !== targetLang) {
+      void i18n.changeLanguage(targetLang);
+    }
+  }, []);
+
   return (
-    <QueryClientProvider client={queryClient}>
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
-    </QueryClientProvider>
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={queryClient}>
+        <AuthProvider>
+          {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+          <Outlet />
+        </AuthProvider>
+      </QueryClientProvider>
+    </I18nextProvider>
   );
 }

@@ -20,6 +20,16 @@ dist-ssr
 .wrangler/
 .dev.vars
 
+# Snoat-plattformen
+# Hemmeligheter – genereres lokalt av scripts/bootstrap-env.mjs
+.env
+!.env.example
+# Klonet referansekode, ikke vår egen (se backend/vendor/README.md)
+backend/vendor/*
+!backend/vendor/README.md
+# Klonede repoer og build-artefakter fra deployments
+.snoat/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

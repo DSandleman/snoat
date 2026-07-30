@@ -1,0 +1,21 @@
+<svg
+  viewBox="0 0 80 90"
+  aria-hidden="true"
+  fill="none"
+  xmlns="http://www.w3.org/2000/svg"
+>
+  <polygon
+    points="40,5 75,25 75,65 40,85 5,65 5,25"
+    fill="none"
+    stroke="#00F0FF"
+    stroke-width="4"
+  />
+  <path
+    d="M 55,30 L 30,30 L 30,45 L 50,45 L 50,60 L 25,60"
+    fill="none"
+    stroke="#00F0FF"
+    stroke-width="5"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

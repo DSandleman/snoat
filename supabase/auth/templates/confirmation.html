@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <title>Bekreft din e-post</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      supported-color-schemes: light dark;
+    }
+    body, .bg-wrapper { background-color: #f8fafc !important; color: #0f172a !important; }
+    .card-box { background-color: #ffffff !important; border: 1px solid #e2e8f0 !important; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important; }
+    .text-title { color: #0f172a !important; }
+    .text-logo { color: #0f172a !important; }
+    .text-sub { color: #475569 !important; }
+    .text-footer { color: #94a3b8 !important; }
+    .border-divider { border-top: 1px solid #f1f5f9 !important; }
+    .btn-action { background-color: #0284c7 !important; color: #ffffff !important; }
+    .dot-accent { color: #0284c7 !important; }
+
+    @media (prefers-color-scheme: dark) {
+      body, .bg-wrapper { background-color: #090d16 !important; color: #f3f4f6 !important; }
+      .card-box { background-color: #121826 !important; border: 1px solid #1e293b !important; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.4) !important; }
+      .text-title { color: #ffffff !important; }
+      .text-logo { color: #ffffff !important; }
+      .text-sub { color: #9ca3af !important; }
+      .text-footer { color: #6b7280 !important; }
+      .border-divider { border-top: 1px solid #1f293d !important; }
+      .btn-action { background-color: #00f0ff !important; color: #090d16 !important; }
+      .dot-accent { color: #00f0ff !important; }
+    }
+  </style>
+</head>
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased;">
+  <table border="0" cellpadding="0" cellspacing="0" width="100%" class="bg-wrapper" style="padding: 40px 20px;">
+    <tr>
+      <td align="center">
+        <!-- Logo -->
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 480px; margin-bottom: 24px; text-align: center;">
+          <tr>
+            <td>
+              <span class="text-logo" style="font-size: 28px; font-weight: 800; letter-spacing: -0.05em;">snoat<span class="dot-accent">.</span></span>
+            </td>
+          </tr>
+        </table>
+        
+        <!-- Card -->
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" class="card-box" style="max-width: 480px; border-radius: 16px; overflow: hidden;">
+          <tr>
+            <td style="padding: 40px 32px; text-align: left;">
+              <h1 class="text-title" style="font-size: 22px; font-weight: 700; margin-top: 0; margin-bottom: 16px;">Velkommen til Snoat</h1>
+              <p class="text-sub" style="font-size: 15px; line-height: 24px; margin-top: 0; margin-bottom: 24px;">
+                Takk for at du registrerte deg. For å aktivere din konto og fullføre registreringen, vennligst bekreft e-postadressen din.
+              </p>
+              
+              <table border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+                <tr>
+                  <td align="center">
+                    <a href="{{ .ConfirmationURL }}" class="btn-action" style="display: inline-block; font-weight: 700; font-size: 15px; text-decoration: none; padding: 14px 32px; border-radius: 8px;">Bekreft e-postadresse</a>
+                  </td>
+                </tr>
+              </table>
+              
+              <p class="text-footer border-divider" style="font-size: 12px; line-height: 18px; margin: 0; padding-top: 16px;">
+                Hvis du ikke har opprettet en konto på Snoat, kan du se bort fra denne e-posten.
+              </p>
+            </td>
+          </tr>
+        </table>
+        
+        <!-- Footer -->
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 480px; margin-top: 24px; text-align: center;">
+          <tr>
+            <td class="text-footer" style="font-size: 12px; line-height: 18px;">
+              Snoat — Bygget i Norge. Data lagret i Norge.<br>
+              © 2026 Frostbyte Group AS
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

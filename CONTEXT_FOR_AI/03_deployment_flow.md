@@ -1,0 +1,386 @@
+# Livssyklusen til en Deployment
+
+Fra en deployment utløses til applikasjonen er live på et subdomene.
+Implementert i `backend/src/services/deploy.ts`, som orkestrerer de øvrige
+tjenestene i `backend/src/services/`.
+
+**To ting kan utløse en deployment:** brukeren trykker «Deploy» i dashboardet,
+eller det kommer en push til hovedgrenen på GitHub. Begge veier ender i
+`startDeployment()`, og resten av flyten er identisk.
+
+## Oversikt
+
+```
+Dashboard ──POST /api/projects/:id/deploy──▶ backend
+GitHub ────POST /api/webhooks/github ──────▶ backend   (push til hovedgrenen)
+                                              │
+                                              ├─ 1. Insert deployments (queued) ──▶ Supabase
+                                              │    svarer 202 med én gang
+                                              │
+                                              ├─ 2. git clone --depth 1
+                                              ├─ 3. nixpacks build   ──▶ Docker-daemon
+                                              ├─ 4. dockerode run    ──▶ snoat_apps-nettverket
+                                              │       ny container *ved siden av* den gamle
+                                              ├─ 5. helsesjekk på den nye containeren
+                                              ├─ 6. PATCH /id/snoat_app_<slug> ──▶ Caddy admin-API
+                                              │       trafikken bytter upstream atomisk
+                                              ├─ 7. stopp + fjern forrige container
+                                              └─ 8. Update status=success, url
+                                                   │
+Dashboard ◀──Supabase Realtime på deployments──────┘
+```
+
+Rekkefølgen i steg 4–7 er hele poenget: den gamle containeren serverer trafikk
+helt til den nye er bekreftet oppe og Caddy er byttet over. En deployment koster
+derfor **ingen nedetid**, og en deployment som feiler lar den kjørende versjonen
+stå urørt.
+
+## Stegene
+
+**1. Trigger.** Dashboardet kaller `POST /api/projects/:projectId/deploy` med
+brukerens Supabase access-token. Backend verifiserer tokenet mot GoTrue og at
+prosjektet tilhører brukeren (`backend/src/middleware/auth.ts`).
+
+Alternativt kommer triggeren fra GitHub, som `POST /api/webhooks/github` ved en
+push. Der finnes ingen innlogget bruker, så eierskapet slås opp fra repoet i
+stedet – se «Automatisk deploy ved push» under.
+
+**2. Kvittering.** Backend oppretter en rad i `deployments` med status `queued`
+og svarer **202 med én gang**. Selve byggingen fortsetter i bakgrunnen.
+Dashboardet poller ikke – det abonnerer på `deployments` via Supabase Realtime.
+En prosess-lokal lås (`inFlight`) hindrer to samtidige builds av samme prosjekt.
+Containernavnene kolliderer ikke lenger – de er unike per deployment – men de to
+buildene ville kjempet om det samme image-navnet, og om Caddy-ruten: den tregeste
+kunne rukket å bytte den tilbake til sin egen container etter at den raskeste var
+ferdig.
+
+**3. Kloning.** `git clone --depth 1` til
+`$SNOAT_WORKSPACE_DIR/<projectId>/<deploymentId>`. Bare arbeidstreet trengs, ikke
+historikken. `GIT_TERMINAL_PROMPT=0` gjør at private repoer feiler raskt i stedet
+for å henge til build-timeouten. Commit-hashen lagres på deploymenten.
+
+**0. Kø.** `startDeployment()` oppretter raden med status `queued` og legger den i
+en **global kø** med `SNOAT_MAX_CONCURRENT_BUILDS` plasser (standard 1). `inFlight`
+hindrer at samme prosjekt bygges to ganger. Selv om vi nå kjører på en 16 GB VPS,
+bidrar køen til å holde ressursbruken stabil under store byggejobber. Ventende
+deployments får en linje i loggen om hvor mange som ligger foran.
+
+Køen lever i minnet til backend-prosessen. Derfor rydder `failOrphanedDeployments()`
+ved oppstart: alt som står i `queued` eller `building` når prosessen starter, har
+mistet prosessen sin og merkes `failed` med en forklaring i loggen. Uten den blir
+raden stående for alltid, og dashboardet teller opp på en build som døde. Begge
+mekanismene forutsetter **én** backend-instans, akkurat som `inFlight`.
+
+**4. Image build.** `nixpacks build <dir> --name snoat/<slug>` med `--env` per
+miljøvariabel og `--build-cmd` hvis prosjektet har en override. Nixpacks
+detekterer rammeverket selv – brukeren trenger ingen Dockerfile. `PORT` injiseres
+alltid. Stdout og stderr strømmes til `deployments.logs`.
+
+**Språkversjon når repoet ikke oppgir en.** Nixpacks velger Node-versjon i
+rekkefølgen `NIXPACKS_NODE_VERSION` → `engines.node` → `.nvmrc` → sin egen
+innebygde standard, og den standarden er **Node 18** – ute av vedlikehold siden
+april 2025, og for gammel for Next.js 15+, Vite 6+ og `@supabase/supabase-js`.
+Et helt vanlig prosjekt uten `engines`-felt feilet derfor på `npm run build` uten
+at brukeren hadde gjort noe galt.
+
+`services/runtime-versions.ts` fyller hullet nederst i kjeden. Før kommandoen
+settes sammen leses det klonede repoet:
+
+| Repoet inneholder | Snoat gjør |
+| --- | --- |
+| `nixpacks.toml`/`nixpacks.json` | ingenting – repoet styrer byggeoppsettet selv |
+| ingen `package.json` | ingenting – ikke et Node-prosjekt |
+| `engines.node`, `.nvmrc` eller `.node-version` | ingenting, men logger hvor versjonen kom fra |
+| ingen av delene | sender `--env NIXPACKS_NODE_VERSION=$SNOAT_DEFAULT_NODE_VERSION` (standard `22`) |
+
+Har brukeren selv satt `NIXPACKS_NODE_VERSION` under Miljøvariabler, vinner den:
+den ligger allerede i argumentlista, og en ny `--env` med samme nøkkel ville
+overstyrt et bevisst valg. Valget skrives til byggeloggen (`Node-versjon: 22
+(Snoat-standard, repoet oppgir ingen)`), slik at det er etterprøvbart når et
+bygg ryker.
+
+**Minnetak under bygging.** `NODE_OPTIONS=--max-old-space-size=$SNOAT_BUILD_NODE_MEMORY_MB`
+injiseres når prosjektet ikke setter `NODE_OPTIONS` selv. `next build` tar så mye
+heap den får lov til; uten taket er det verten som setter grensen, og da er det
+for sent. Med taket feiler bygget med «JavaScript heap out of memory» – en feil
+som rammer én kunde og står forklart i loggen.
+
+Taket bakes inn i image-et av nixpacks, og et build-tak er altfor høyt for en
+container begrenset til `SNOAT_APP_MEMORY_MB`. Tror V8 den har mer heap enn den
+har, GC-er den for lat og Docker OOM-dreper appen. `containers.ts` overstyrer
+derfor `NODE_OPTIONS` ved kjøring til 75 % av containerens minnetak.
+
+Modulen er en tabell over kjøretider, ikke en Node-spesialtilfelle: når
+Nixpacks-standarden for Python eller Go eldes på samme måte, er det én rad som
+skal legges til. Verdien må være et major-nummer Nixpacks kjenner (18, 20, 22,
+23) – en ukjent verdi ignoreres, og da er vi tilbake til Nixpacks sin egen
+standard.
+
+**Buildx er ikke valgfritt.** Nixpacks shell-er ut til `docker build`, og Docker
+CLI 27 har BuildKit på som standard – der BuildKit i praksis *er* buildx-plugin.
+Den statiske `docker`-tarballen fra download.docker.com inneholder kun klienten,
+ingen CLI-plugins, så `backend/Dockerfile` laster ned `docker-buildx` separat til
+`/usr/local/lib/docker/cli-plugins/`. Mangler den, dør hver enkelt build på:
+
+```
+ERROR: BuildKit is enabled but the buildx component is missing or broken.
+```
+
+Å sette `DOCKER_BUILDKIT=0` er ingen vei rundt: nixpacks genererer
+`RUN --mount=type=cache,...` for npm-cachen og byggecachen, og den gamle
+byggeren forstår ikke den syntaksen. BuildKit er et krav, ikke en preferanse.
+
+Host-daemonen må også støtte BuildKit (Docker 23+). Buildx bruker da
+`docker`-driveren mot daemonens innebygde BuildKit, så ingen egen
+buildkit-container trengs.
+
+**Første build er dyr, resten er billige.** Steg 4 i den genererte Dockerfilen er
+`RUN nix-env -if .nixpacks/nixpkgs-<hash>.nix`, som laster ned og materialiserer
+hele nix-pakkesettet. Tidligere kunne dette ta 8–15 minutter, men på 16 GB-serveren
+går det betydelig raskere. Det logger nesten ingenting mens det pågår – stillhet
+betyr ikke at noe henger. Laget caches av
+BuildKit og deles av alle prosjekter med samme nixpkgs-revisjon og pakkesett, så
+kostnaden betales én gang, ikke per deploy.
+
+Dette er også hovedgrunnen til at Snoat bygger tregere enn Vercel: Vercel bruker
+ferdigbakte byggeimages der Node allerede ligger inne, og bygger for de fleste
+rammeverk *ikke* et container-image i det hele tatt – de kjører bygget på en
+forberedt maskin og pakker resultatet som statiske filer pluss functions. Vi
+betaler både nix-provisjonering og fulle OCI-lag-commits.
+
+**4b. Statiske sider hopper over hele resten.** Har prosjektet
+`static_output_dir` satt, startes ingen container. `services/static-site.ts`
+kjører `docker create` på image-et (den startes aldri – bare filsystemet
+materialiseres), kopierer ut katalogen med `docker cp`, og fjerner den
+midlertidige containeren igjen. Filene legges i
+`$SNOAT_SITES_DIR/<projectId>/<deploymentId>/`, og Caddy får en `file_server`-rute
+dit i stedet for `reverse_proxy`.
+
+Dette er den største kostnadsbesparelsen i plattformen. En container koster minne
+24/7 uansett om noen besøker siden; filer på disk koster ingenting når ingen er
+der. Hundrevis av statiske sider går fra titalls GB RAM til tilnærmet null.
+
+Vi **gjetter aldri** på om et prosjekt er statisk. Feltet settes av brukeren under
+Innstillinger, fordi et feilgjett gir en side som ser levende ut helt til noe
+server-side kalles – en verre feil enn å kjøre en container for mye. UI-et
+foreslår `dist` for Vite/Astro og `out` for Next.js med `output: 'export'`.
+
+`static_spa_fallback` styrer hva som skjer med en URL uten treff:
+
+| Innstilling | Oppførsel | Riktig for |
+| --- | --- | --- |
+| Av (standard) | 404 | Astro, Hugo, Eleventy – de har egen `404.html` |
+| På | `index.html` serveres | SPA-er med klientruting (React Router, TanStack Router) |
+
+Rekkefølgen er den samme som for containere: filene legges ved siden av forrige
+versjon, og ruten byttes først når de ligger der. Feiler noe, settes den forrige
+ruten tilbake – uansett om den pekte på en katalog eller en container.
+`SNOAT_STATIC_KEEP_VERSIONS` (standard 3) beholder tidligere versjoner på disk,
+så tilbakerulling for statiske sider er et rutebytte, ikke en ny build.
+
+Verdien går inn i et `docker cp`-argument og en filsti. Den valideres derfor både
+av en check-constraint i databasen og av `assertSafeOutputDir()` – service-role-
+nøkkelen omgår ikke bare RLS, den omgår også constrainten.
+
+**5. Container.** Kun for prosjekter *uten* `static_output_dir`.
+`dockerode.createContainer` med image-et, brukerens
+miljøvariabler, ressurstak (`Memory`, `NanoCpus`) og `RestartPolicy:
+unless-stopped`. Containeren kobles til nettverket `snoat_apps` og **publiserer
+ingen port på verten** – Caddy når den på containernavnet over det interne
+nettverket.
+
+Navnet er `snoat-app-<slug>-<deployment-id-prefiks>`, altså **unikt per
+deployment**. Det er mekanismen som gjør rullerende utrulling mulig: den nye
+containeren starter ved siden av den som kjører, uten å kollidere med navnet
+dens. Uuid-en kortes til åtte tegn fordi navnet også er DNS-navnet på
+apps-nettverket, og en DNS-label tåler maks 63 tegn. Båndet mellom container og
+prosjekt er ikke navnet, men labelen `no.snoat.project-id` – den er det
+`containers.ts` slår opp på.
+
+I tillegg får containeren nettverksaliaset `<slug>`, som er stabilt på tvers av
+deployments slik at apper kan nå hverandre på prosjektnavnet. I sekundene der to
+versjoner kjører samtidig peker aliaset på begge (round-robin). Caddy dial-er
+containernavnet, som alltid er entydig.
+
+**Helsesjekk.** `assertStillRunning()` poller containeren i tre sekunder og
+krever at den står stabilt: `RestartCount` må være 0 og `State.Restarting` falsk.
+Ett enkelt øyeblikksbilde er ikke nok – `RestartPolicy: unless-stopped` starter
+en krasjende app på nytt igjen og igjen, og `State.Running` er sann i glimtene
+mellom omstartene. En app i krasj-loop ville ellers sluppet gjennom som «Live»
+*og* fått en fungerende versjon revet ned under seg. Feiler sjekken, hentes de
+siste 50 linjene fra applikasjonens egen logg inn i byggeloggen.
+
+**6. Ruting.** `PATCH http://caddy:2019/id/snoat_app_<slug>` med en rute som
+matcher `<slug>.snoat.localhost` og proxier til den nye containeren. PATCH
+**bytter ruten atomisk** i Caddys minne: forespørsler som er underveis fullføres
+mot den gamle upstreamen, og neste forespørsel treffer den nye. Finnes ruten ikke
+(første deployment), svarer Caddy `unknown object ID`, og vi faller tilbake til
+`POST /id/snoat_apps/handle/0/routes` for å opprette den. `@id` gjør at ruten kan
+adresseres direkte i stedet for via en array-indeks som flytter seg.
+
+DELETE etterfulgt av POST – som er det nærmeste Caddy har til en upsert – ville
+hatt et vindu der subdomenet ikke matchet noen rute, og brukerne ville fått 404.
+Målt i den lokale stacken: 17 av 18 forespørsler feilet gjennom det vinduet, mot
+0 av 254 med PATCH.
+
+Etter byttet leses ruten tilbake med `appRouteUpstream()`. Vi river ikke ned noe
+før Caddy har bekreftet at den peker der vi tror.
+
+**7. Opprydding.** Først nå – med trafikken trygt over på den nye containeren –
+tas den forrige ned. `retirePrevious()` stopper hver gjenværende container for
+prosjektet med `SNOAT_APP_STOP_TIMEOUT_S` sekunders frist (SIGTERM → SIGKILL),
+slik at forespørsler den holder på får fullføre, og fjerner den så. Feiler
+oppryddingen, er deploymenten fortsatt vellykket: trafikken går allerede til den
+nye containeren, og den gamle logges som noe som må ryddes manuelt.
+
+**8. Fullført.** Status settes til `success` med `url`. Arbeidsområdet slettes –
+image-et er artefakten vi beholder.
+
+## Feilhåndtering
+
+Hvert steg kaster `DeployError` med et stegnavn. Pipelinen fanger alt, skriver
+feilmeldingen inn i byggeloggen, setter status `failed` og rydder
+arbeidsområdet. Brukeren ser hvilket steg som feilet og hvorfor, i loggvinduet.
+
+**En feilet deployment koster ikke nedetid.** Alt som skjer før steg 6 rører ikke
+den kjørende versjonen: klone, build og den nye containeren er nye artefakter ved
+siden av den. Feiler noe av det, gjør `rollback()` i `deploy.ts` to ting:
+
+1. peker Caddy-ruten tilbake til upstreamen som serverte trafikk før
+   deploymenten – lest før noe ble endret, og bare hvis ruten faktisk ble byttet
+2. fjerner deploymentens egen container
+
+Den forrige containeren er da fortsatt der den var, og brukerne merker ingenting
+annet enn at den nye versjonen aldri kom. Ingenting i `rollback()` får kaste –
+den opprinnelige feilen er den brukeren skal se i loggen.
+
+**Pipelinen kan ikke ta ned backend.** `startDeployment()` starter `runPipeline()`
+uten å vente på den, og en avvisning fra en promise ingen venter på er en
+*unhandled rejection* – som Node avslutter prosessen på. Pipelinen fanger sine
+egne feil, men koden som ligger utenfor try-blokken (oppsettet av `LogStream`, den
+første statusoppdateringen) gjør det ikke. Derfor har bakgrunnskallet en egen
+`.catch()` som kun logger. Det tålte vi da en build krevde at et menneske trykket
+på en knapp; med webhooks starter builds av seg selv, og én rar deployment skal
+ikke kunne velte serveren for alle.
+
+## Automatisk deploy ved push (GitHub-webhooks)
+
+Implementert i `backend/src/routes/webhooks.ts`, med primitivene i
+`backend/src/lib/github.ts`. GitHub kaller `POST /api/webhooks/github` når noen
+pusher, og backend starter en deployment av hvert prosjekt som peker på repoet.
+
+**Endepunktet er offentlig.** Det ligger under `/api`, men *utenfor*
+`requireAuth` – GitHub har ingen Supabase-sesjon å sende med. I `index.ts`
+monteres det derfor **før** `app.route("/api", api)`: Hono matcher handlere i
+registreringsrekkefølge, og en handler som svarer stopper kjeden. Bytter man om
+på de to linjene, begynner GitHub å få 401.
+
+### Rekkefølgen i mottaket
+
+1. **Signatur.** Er `GITHUB_WEBHOOK_SECRET` satt, må `x-hub-signature-256`
+   stemme med en HMAC-sha256 over **råkroppen** – ikke over noe vi har parset og
+   serialisert på nytt, siden `JSON.stringify` ikke gir samme bytes tilbake.
+   Sammenligningen er `timingSafeEqual`. Feil eller manglende signatur gir `401`.
+   Er secreten *ikke* satt, tas forespørselen imot med en `warn` i loggen. Det er
+   en bevisst åpning for å få oppsettet i gang, og en risiko: se
+   `08_security_model.md`.
+2. **Event.** `x-github-event` styrer resten. `ping` (som GitHub sender når
+   webhooken opprettes) svarer `pong`. Alt annet enn `push` kvitteres som
+   ignorert – App-en mottar alle eventene installasjonen abonnerer på, og de er
+   ikke feil, bare ikke vårt bord.
+3. **Ref.** `refs/heads/<gren>` plukkes ut av `ref`. Tags, slettede grener
+   (`deleted: true`) og andre refs ignoreres.
+4. **Gren.** Kun repoets `default_branch` bygges; `main`/`master` er fallback
+   hvis payloaden mangler feltet. En push til en feature-gren kvitteres og
+   ignoreres.
+5. **Prosjektoppslag.** `repository.full_name` normaliseres til `owner/repo` med
+   små bokstaver, og sammenlignes med samme normalform av `projects.repo_url`.
+   Dette er nødvendig fordi `repo_url` finnes i alle varianter – med og uten
+   `.git`, med skråstrek til slutt, med `/tree/main` hengende på, i vilkårlig
+   case. `ilike` finner kandidatene i Postgres; den endelige sammenligningen
+   skjer i JS, fordi `%eier/app%` også ville truffet `eier/app-docs`.
+   Verten må være `github.com`, ellers kunne en webhook trigget en deployment av
+   et likt navngitt repo hos en annen leverandør.
+6. **Trigger.** `startDeployment(project)` per treff. Flere prosjekter kan peke
+   på samme repo – to kolleger i samme organisasjon, eller ett repo deployet
+   under to slugs – og alle bygges.
+
+### Svar til GitHub
+
+| Kode | Når |
+| --- | --- |
+| 200 | `ping`, ukjent event, tag/slettet gren, annen gren enn hovedgrenen, eller ingen prosjekter som bruker repoet |
+| 202 | Minst ett prosjekt matchet. `results[]` sier per prosjekt om det startet (`deploying`) eller ble hoppet over (`already_building`) |
+| 400 | Payloaden kunne ikke tolkes, eller mangler `repository.full_name` |
+| 401 | Signaturen stemmer ikke (og secret er konfigurert) |
+| 413 | Body over 5 MB. Ruten er åpen, så den har et tak |
+| 500 | Databasen svarte ikke. «Redeliver» hos GitHub er riktig måte å prøve igjen |
+
+En push som kommer mens prosjektet allerede bygges gir **202, ikke 409**:
+`inFlight`-låsen hopper over prosjektet, og en push under en pågående build er en
+forventet tilstand – ikke en leveringsfeil GitHub skal farge rød i
+leveringsloggen. Endringen fra pushen kommer med i neste deployment.
+
+Ingenting i mottaket kaster videre. Alt som går galt logges med `pino`, beriket
+med `x-github-delivery`, som er den samme ID-en GitHub viser i leveringsloggen
+sin – limet mellom deres side og våre logger.
+
+### Oppsett
+
+På App-en (https://github.com/settings/apps → Webhook):
+
+- **Webhook URL:** `<API_EXTERNAL_URL>/api/webhooks/github`
+- **Webhook secret:** samme verdi som `GITHUB_WEBHOOK_SECRET` i `.env`
+- **Subscribe to events:** `Push`
+
+## Reconcile ved oppstart
+
+Caddy startes med `--config /etc/caddy/config.json`, så dynamisk opprettede
+ruter forsvinner ved restart. **Supabase er source of truth, ikke proxyens
+minne.** Ved oppstart går backend gjennom alle prosjekter med en vellykket
+deployment, sjekker om containeren faktisk kjører, og gjenoppretter ruten
+(`reconcileRoutes()` i `deploy.ts`).
+
+Hvilken container ruten skal peke på, avgjøres av **databasen**: den nyeste
+deploymenten med status `success` gir containernavnet. Bare hvis den containeren
+ikke kjører, faller vi tilbake til den nyeste kjørende containeren prosjektet
+har. Uten det ville en igjenglemt container fra en avbrutt deployment – backend
+drept mellom helsesjekk og opprydding – kunne overta trafikken ved neste omstart
+bare fordi den er nyest. Er det flere kjørende containere for samme prosjekt,
+logges det som en `warn`; neste deployment rydder dem.
+
+## Krav til brukerens applikasjon
+
+- Må lytte på porten i `$PORT` (`SNOAT_APP_PORT`, standard 3000) på `0.0.0.0`.
+- Må kunne bygges av Nixpacks, eller ha en `nixpacks.toml`.
+- Trenger appen en bestemt Node-versjon, oppgis den i `engines.node` eller
+  `.nvmrc`. Uten det bygges den med `SNOAT_DEFAULT_NODE_VERSION` (se steg 4).
+- Private repoer fungerer **hvis** prosjektet ble opprettet gjennom
+  repo-velgeren, altså har `github_installation_id` satt: da klones det med et
+  kortlevd installasjonstoken (`authenticatedCloneUrl()` i `lib/github.ts`). Er
+  URL-en limt inn for hånd, er `github_installation_id` `NULL`, og repoet må være
+  offentlig.
+- Skal auto-deploy virke, må App-en være installert på repoet – ellers sender
+  GitHub ingen push-events til oss.
+
+## Ikke implementert ennå
+
+- **Deploy-preview per gren.** Webhooken bygger kun hovedgrenen. En push til en
+  feature-gren kvitteres og forkastes; det finnes ingen midlertidig URL per PR.
+- **Trigger-kilden vises ikke i UI.** En webhook-build og en manuell build ser
+  identiske ut i dashboardet – `deployments` har ingen kolonne som skiller dem.
+- **Helsesjekk over HTTP.** Vi verifiserer at containeren *står*, ikke at appen
+  svarer på `$PORT`. En app som starter uten å binde porten regnes som frisk.
+  Backend ligger ikke på `snoat_apps`-nettverket og kan derfor ikke nå appen
+  direkte; en ordentlig readiness-probe må gå gjennom Caddy eller kobles på
+  nettverket.
+- **Tilbakerulling til forrige versjon.** Vi beholder den gamle containeren til
+  den nye er frisk, men når den først er fjernet, finnes ingen «rull tilbake til
+  forrige deployment»-knapp. Image-et fra forrige build har mistet taggen sin
+  (`snoat/<slug>` overskrives per build) og ligger igjen som et dangling image
+  til Docker rydder det.
+- **Egne domener.** Ruten som opprettes matcher kun
+  `<slug><SNOAT_APP_DOMAIN_SUFFIX>`. Kunden kan sette DNS-pekerne sine (fanen
+  «DNS» veileder i det), men Caddy svarer ikke på vertsnavnet før det legges inn
+  som ekstra `host` på ruten. Se `11_custom_domains_and_dns.md`.
+- **Bygging på tvers av flere verter.** Alt kjører mot én Docker-daemon.

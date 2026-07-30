@@ -1,0 +1,18 @@
+# Verts-node_modules er bygget for macOS og ville overskrevet de linux-binærene
+# `npm ci` installerte i imaget.
+node_modules
+.output
+.nitro
+.tanstack
+.wrangler
+.vinxi
+
+# Hemmeligheter hører ikke hjemme i et image-lag. VITE_-verdiene kommer inn som
+# build-args fra docker-compose i stedet.
+.env
+.env.*
+!.env.example
+
+.git
+*.log
+.DS_Store

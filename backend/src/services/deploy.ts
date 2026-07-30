@@ -1,0 +1,509 @@
+import { config } from "../config.js";
+import * as caddy from "../lib/caddy.js";
+import { logger } from "../lib/logger.js";
+import { supabase } from "../lib/supabase.js";
+import { DeployError, type Deployment, type DeploymentStatus, type Project } from "../types.js";
+import * as containers from "./containers.js";
+import { cleanupWorkspace, cloneRepository } from "./git.js";
+import { LogStream } from "./log-stream.js";
+import { buildImage } from "./nixpacks.js";
+import { pruneOldSites, publishStaticSite, removeProjectSites, siteDirFor } from "./static-site.js";
+import { rm, stat } from "node:fs/promises";
+
+/**
+ * Prosjekter som bygges akkurat nå.
+ *
+ * To samtidige builds av samme prosjekt ville kjempet om det samme image-navnet
+ * og containernavnet, og den tregeste ville overskrevet den raskeste. Låsen er
+ * per prosess – med flere backend-instanser må dette flyttes til en delt kø.
+ */
+const inFlight = new Set<string>();
+
+/**
+ * Deployments som venter på ledig byggekapasitet.
+ *
+ * `inFlight` hindrer at *samme* prosjekt bygges to ganger, men sier ingenting om
+ * hvor mange builds som kjører totalt. Det holdt ikke: en nix-build tar det
+ * minnet den trenger, og to samtidige på en liten VPS spiser hele verten. Da
+ * fryser ikke bare byggene – Postgres og Caddy står på samme boks, så hele
+ * plattformen går ned med dem. 30. juli 2026 skjedde nettopp det.
+ *
+ * Køen er global og har `SNOAT_MAX_CONCURRENT_BUILDS` plasser. Deploymenten
+ * ligger i `queued` mens den venter, som er en status dashboardet allerede
+ * kjenner, så brukeren ser at det skjer noe – bare ikke ennå.
+ */
+interface QueueEntry {
+  project: Project;
+  deployment: Deployment;
+  logs: LogStream;
+}
+
+const waiting: QueueEntry[] = [];
+
+export function isDeploying(projectId: string): boolean {
+  return inFlight.has(projectId) || waiting.some((entry) => entry.project.id === projectId);
+}
+
+/**
+ * Starter så mange ventende builds som det er ledige plasser til.
+ *
+ * Kalles når noe legges i køen og når en build blir ferdig. `inFlight` oppdateres
+ * synkront før `runPipeline` får lov til å avvente noe, slik at løkka ikke kan
+ * dele ut samme plass to ganger.
+ */
+function pump(): void {
+  while (inFlight.size < config.SNOAT_MAX_CONCURRENT_BUILDS) {
+    const next = waiting.shift();
+    if (!next) return;
+
+    inFlight.add(next.project.id);
+
+    // Pipelinen fanger sine egne feil, men `catch`-en her er ikke pynt: en
+    // avvisning fra det som ligger *utenfor* try-blokken i `runPipeline` ville
+    // ellers blitt en unhandled rejection – og Node avslutter prosessen på dem.
+    // Nå som webhooks starter builds uten at et menneske ser på, må en enkelt
+    // rar deployment ikke kunne ta ned hele backend.
+    void runPipeline(next.project, next.deployment, next.logs)
+      .catch((error) => {
+        logger.error(
+          { project: next.project.name, deployment: next.deployment.id, err: error },
+          "Deployment-pipelinen kastet uventet",
+        );
+      })
+      .finally(() => {
+        inFlight.delete(next.project.id);
+        pump();
+      });
+  }
+}
+
+/**
+ * Merker deployments som mistet prosessen sin som feilet.
+ *
+ * Køen og `inFlight` lever i minnet til backend-prosessen. Restartes den –
+ * plattform-oppdatering, server-reboot, OOM-drap – er det ingen som bygger
+ * videre på radene som sto i `queued` eller `building`. Uten denne ryddingen blir
+ * de stående for alltid, og dashboardet teller opp «Bygger: 55m» på en build som
+ * døde for lenge siden. Det skjedde i praksis 30. juli 2026.
+ *
+ * At *alle* slike rader er foreldreløse ved oppstart forutsetter én backend-
+ * instans, akkurat som `inFlight` gjør. Kjøres flere, ville dette drept en
+ * kollegas kjørende build, og køen må da flyttes til delt lagring med eierskap
+ * og heartbeat.
+ */
+export async function failOrphanedDeployments(): Promise<number> {
+  const { data, error } = await supabase
+    .from("deployments")
+    .select("id, logs")
+    .in("status", ["queued", "building"]);
+
+  if (error) throw new Error(`Kunne ikke lese avbrutte deployments: ${error.message}`);
+
+  const orphans = (data ?? []) as Array<{ id: string; logs: string | null }>;
+
+  for (const orphan of orphans) {
+    const note =
+      `\n── Deployment avbrutt ──\n` +
+      `Backend startet på nytt mens denne deploymenten pågikk. Vanligste årsaker er en ` +
+      `plattform-oppdatering eller at serveren gikk tom for minne. Bygget ble aldri fullført.\n` +
+      `Den forrige versjonen kjører videre som før – start en ny deployment når du er klar.\n`;
+
+    const { error: updateError } = await supabase
+      .from("deployments")
+      .update({ status: "failed", logs: `${orphan.logs ?? ""}${note}` })
+      .eq("id", orphan.id);
+
+    if (updateError) {
+      logger.warn({ deployment: orphan.id, err: updateError }, "Kunne ikke rydde avbrutt deployment");
+    }
+  }
+
+  if (orphans.length > 0) {
+    logger.warn({ count: orphans.length }, "Avbrutte deployments merket som feilet ved oppstart");
+  }
+
+  return orphans.length;
+}
+
+async function setStatus(
+  deploymentId: string,
+  status: DeploymentStatus,
+  fields: Partial<Pick<Deployment, "url" | "commit_hash">> = {},
+): Promise<void> {
+  const { error } = await supabase
+    .from("deployments")
+    .update({ status, ...fields })
+    .eq("id", deploymentId);
+
+  if (error) {
+    logger.error({ deploymentId, status, err: error }, "Kunne ikke oppdatere deployment-status");
+  }
+}
+
+/**
+ * Oppretter en deployment og starter pipelinen i bakgrunnen.
+ *
+ * Vi returnerer så snart raden finnes, slik at dashboardet umiddelbart kan
+ * abonnere på den via Supabase Realtime og følge byggingen. HTTP-forespørselen
+ * venter altså ikke på at bygget blir ferdig.
+ */
+export async function startDeployment(project: Project): Promise<Deployment> {
+  if (isDeploying(project.id)) {
+    throw new DeployError("queue", "Prosjektet bygges allerede. Vent til den kjørende buildet er ferdig.");
+  }
+
+  const { data, error } = await supabase
+    .from("deployments")
+    .insert({ project_id: project.id, status: "queued" })
+    .select()
+    .single();
+
+  if (error || !data) {
+    throw new DeployError("queue", `Kunne ikke opprette deployment: ${error?.message}`);
+  }
+
+  const deployment = data as Deployment;
+
+  // Loggen opprettes her, ikke i pipelinen, fordi ventetiden i køen er noe
+  // brukeren skal kunne se. `LogStream` skriver hele teksten ved hver flush, så
+  // det må være *samme* instans hele veien – to instanser for én deployment
+  // ville overskrevet hverandre.
+  const logs = new LogStream(deployment.id);
+  logs.write(`Snoat deployer ${project.name}`);
+  logs.write(`Repository: ${project.repo_url}`);
+
+  const ahead = inFlight.size + waiting.length;
+  waiting.push({ project, deployment, logs });
+
+  if (ahead >= config.SNOAT_MAX_CONCURRENT_BUILDS) {
+    logs.write(
+      `\nVenter på ledig byggekapasitet – ${ahead} ${ahead === 1 ? "build" : "builds"} foran i køen.`,
+    );
+    await logs.flush();
+  }
+
+  pump();
+
+  return deployment;
+}
+
+/**
+ * Peker Caddy tilbake dit trafikken gikk før deploymenten, og rydder containeren
+ * som ikke ble god nok.
+ *
+ * Hele poenget med rullerende utrulling: en feilet deployment skal ikke koste
+ * brukeren nedetid. Den forrige containeren er urørt, så det er nok å fjerne vår
+ * egen. Ingenting her får kaste – den opprinnelige feilen er det brukeren skal se.
+ */
+async function rollback(
+  project: Project,
+  containerName: string,
+  previousUpstream: string | null,
+  logs: LogStream,
+): Promise<void> {
+  logs.step("Ruller tilbake");
+
+  if (previousUpstream) {
+    const current = await caddy.appRouteUpstream(project.name).catch(() => previousUpstream);
+
+    if (current !== previousUpstream) {
+      try {
+        await caddy.upsertAppRoute(project.name, previousUpstream);
+        logs.write(`Ruten peker igjen på ${previousUpstream}.`);
+      } catch (error) {
+        logs.write(`Advarsel: kunne ikke peke ruten tilbake til ${previousUpstream}.`);
+        logger.error({ project: project.name, err: error }, "Kunne ikke rulle tilbake Caddy-ruten");
+      }
+    } else {
+      logs.write(`Forrige versjon serverer fortsatt trafikk på ${previousUpstream}.`);
+    }
+  }
+
+  await containers.removeContainerByName(containerName).catch((error) => {
+    logger.warn({ container: containerName, err: error }, "Kunne ikke rydde feilet container");
+  });
+}
+
+/**
+ * Utrulling av et prosjekt som bare er filer.
+ *
+ * Rekkefølgen er den samme som for containere, og av samme grunn: den nye
+ * versjonen legges ved siden av den gamle, og ruten byttes først når filene
+ * ligger på plass. Feiler noe underveis, står forrige versjon urørt – Caddy har
+ * ikke fått vite om den nye i det hele tatt.
+ */
+async function deployStatic(
+  project: Project,
+  deployment: Deployment,
+  image: string,
+  previousRoute: Awaited<ReturnType<typeof caddy.getAppRoute>>,
+  logs: LogStream,
+): Promise<void> {
+  const root = await publishStaticSite(project, deployment.id, image, logs);
+
+  try {
+    logs.step("Flytter trafikken over");
+    await caddy.upsertStaticRoute(project.name, root, project.static_spa_fallback);
+
+    const active = await caddy.appRouteRoot(project.name);
+    if (active !== root) {
+      throw new DeployError(
+        "route",
+        `Caddy serverer ${active ?? "ingenting"} etter byttet, forventet ${root}.`,
+      );
+    }
+
+    logs.write("Filene serveres direkte av Caddy – ingen container kjører for dette prosjektet.");
+  } catch (error) {
+    if (previousRoute) {
+      await caddy.restoreAppRoute(project.name, previousRoute).catch((restoreError: unknown) => {
+        logger.error({ project: project.name, err: restoreError }, "Kunne ikke rulle tilbake ruten");
+      });
+    }
+
+    await rm(root, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
+
+  // Prosjektet kan ha kjørt som container tidligere. Den skal ikke stå igjen og
+  // spise minne for en side som nå serveres fra disk – det er hele poenget.
+  const running = await containers.countRunning(project).catch(() => 0);
+
+  await containers.removeContainer(project).catch((error: unknown) => {
+    logger.warn({ project: project.name, err: error }, "Kunne ikke fjerne tidligere container");
+  });
+
+  if (running > 0) {
+    logs.write("Den tidligere containeren er stoppet og fjernet.");
+  }
+
+  await pruneOldSites(project.id, deployment.id);
+}
+
+/**
+ * Livssyklusen fra 03_deployment_flow.md:
+ * klone → nixpacks build → ny container → Caddy-bytte → rydd forrige → status.
+ *
+ * Den nye containeren startes under sitt eget navn ved siden av den som kjører,
+ * og trafikken flyttes over først når den er bekreftet oppe. Derfor er det ingen
+ * nedetid, og en feilet deployment lar den kjørende versjonen stå.
+ */
+async function runPipeline(project: Project, deployment: Deployment, logs: LogStream): Promise<void> {
+  const url = `http://${caddy.appHostname(project.name)}`;
+  const started = Date.now();
+
+  await setStatus(deployment.id, "building");
+
+  try {
+    const { directory, commitHash } = await cloneRepository(
+      project.repo_url,
+      project.id,
+      deployment.id,
+      logs,
+      project.github_installation_id,
+    );
+    await setStatus(deployment.id, "building", { commit_hash: commitHash });
+
+    const image = await buildImage(project, directory, logs);
+
+    // Hva serverer trafikk nå? Leses før vi rører noe, slik at vi kan peke
+    // tilbake hit hvis den nye versjonen ikke kommer opp. `null` = første
+    // deployment, ingen rute å bevare. Vi tar vare på hele ruten, ikke bare
+    // upstreamen: den forrige versjonen kan ha vært en katalog like gjerne som
+    // en container, og rollbacken skal ikke bry seg om hvilken.
+    const previousRoute = await caddy.getAppRoute(project.name).catch((error) => {
+      logger.warn({ project: project.name, err: error }, "Kunne ikke lese gjeldende Caddy-rute");
+      return null;
+    });
+
+    if (project.static_output_dir) {
+      await deployStatic(project, deployment, image, previousRoute, logs);
+
+      logs.write(`Live på ${url}`);
+
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      logs.write(`\nFerdig på ${seconds}s.`);
+      logs.write(`\n====================================================================`);
+      logs.write(`[SNOAT] ✓ BYGGING FULLFØRT (${seconds}s) — Prossessen er avsluttet.`);
+      logs.write(`====================================================================\n`);
+      await logs.flush();
+      await setStatus(deployment.id, "success", { url, commit_hash: commitHash });
+
+      logger.info({ project: project.name, deployment: deployment.id, seconds }, "Statisk deployment fullført");
+      return;
+    }
+
+    const previousUpstream = caddy.routeUpstream(previousRoute);
+
+    // Navnet er deterministisk ut fra deployment-id-en. Da treffer oppryddingen i
+    // catch-blokka også hvis containeren ble opprettet men aldri kom i gang.
+    const containerName = containers.containerNameFor(project, deployment.id);
+    const upstream = containers.upstreamFor(containerName);
+
+    try {
+      await containers.runContainer(project, deployment.id, image, logs);
+      await containers.assertStillRunning(containerName, logs);
+
+      logs.step("Flytter trafikken over");
+      await caddy.upsertAppRoute(project.name, upstream);
+
+      // Caddy bytter ruten i minnet – vi leser den tilbake før vi river ned den
+      // forrige containeren, slik at vi aldri fjerner det som faktisk svarer.
+      const active = await caddy.appRouteUpstream(project.name);
+      if (active !== upstream) {
+        throw new DeployError(
+          "route",
+          `Caddy peker på ${active ?? "ingenting"} etter byttet, forventet ${upstream}.`,
+        );
+      }
+
+      logs.write(`Trafikken går nå til ${containerName}.`);
+    } catch (error) {
+      await rollback(project, containerName, previousUpstream, logs);
+      throw error;
+    }
+
+    // Trafikken er over på den nye containeren. Nå – og ikke før – er det trygt
+    // å ta ned den forrige.
+    await containers.retirePrevious(project, containerName, logs);
+
+    logs.write(`Live på ${url}`);
+
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    logs.write(`\nFerdig på ${seconds}s.`);
+    logs.write(`\n====================================================================`);
+    logs.write(`[SNOAT] ✓ BYGGING FULLFØRT (${seconds}s) — Prossessen er avsluttet.`);
+    logs.write(`====================================================================\n`);
+    await logs.flush();
+    await setStatus(deployment.id, "success", { url, commit_hash: commitHash });
+
+    logger.info({ project: project.name, deployment: deployment.id, seconds }, "Deployment fullført");
+  } catch (error) {
+    const step = error instanceof DeployError ? error.step : "ukjent";
+    const message = error instanceof Error ? error.message : String(error);
+
+    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    logs.step(`Deployment feilet (${step}) etter ${seconds}s`);
+    logs.write(message);
+    logs.write(`\nFeilet etter ${seconds}s.`);
+    logs.write(`\n====================================================================`);
+    logs.write(`[SNOAT] ✗ BYGGING FEILET (${step} etter ${seconds}s) — Prossessen er avsluttet.`);
+    logs.write(`====================================================================\n`);
+    await logs.flush();
+    await setStatus(deployment.id, "failed");
+
+    logger.error({ project: project.name, deployment: deployment.id, step, seconds, err: error }, "Deployment feilet");
+  } finally {
+    // Kildekoden er ikke lenger nødvendig – imaget er artefakten vi beholder.
+    await cleanupWorkspace(project.id, deployment.id).catch((error) => {
+      logger.warn({ deployment: deployment.id, err: error }, "Kunne ikke rydde arbeidsområdet");
+    });
+  }
+}
+
+/**
+ * Synkroniserer Caddy med det databasen sier er live.
+ *
+ * Caddy startes med `--config`, så dynamisk opprettede ruter forsvinner ved
+ * restart. Supabase er source of truth, ikke proxyens minne, så vi bygger opp
+ * igjen rutene ved oppstart for hvert prosjekt som faktisk har en kjørende
+ * container.
+ */
+export async function reconcileRoutes(): Promise<{ restored: number; skipped: number }> {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("*, deployments(id, status, created_at)")
+    .order("created_at", { ascending: false });
+
+  if (error) throw new Error(`Kunne ikke lese prosjekter: ${error.message}`);
+
+  let restored = 0;
+  let skipped = 0;
+
+  for (const row of data ?? []) {
+    const { deployments, ...project } = row as Project & {
+      deployments: Array<{ id: string; status: DeploymentStatus; created_at: string }>;
+    };
+
+    const latest = (deployments ?? [])
+      .filter((d) => d.status === "success")
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+
+    if (!latest) {
+      skipped += 1;
+      continue;
+    }
+
+    // Statiske prosjekter har ingen container å slå opp – ruten skal peke på
+    // katalogen den siste vellykkede deploymenten la igjen. Finnes ikke
+    // katalogen (volumet er nytt eller ryddet), er det ingenting å gjenopprette,
+    // og prosjektet må deployes på nytt.
+    if (project.static_output_dir) {
+      const root = siteDirFor(project.id, latest.id);
+
+      if (!(await directoryExists(root))) {
+        logger.warn(
+          { project: project.name, root },
+          "Statisk prosjekt mangler filer på disk – må deployes på nytt",
+        );
+        skipped += 1;
+        continue;
+      }
+
+      await caddy.upsertStaticRoute(project.name, root, project.static_spa_fallback);
+      restored += 1;
+      continue;
+    }
+
+    // Databasen vet hvilken deployment som er live, så vi foretrekker containeren
+    // som hører til den. Ellers ville en igjenglemt container fra en avbrutt
+    // deployment kunne overta trafikken bare fordi den er nyest.
+    const expected = containers.containerNameFor(project, latest.id);
+    const name = (await containers.isRunningByName(expected))
+      ? expected
+      : await containers.currentContainerName(project);
+
+    if (!name) {
+      skipped += 1;
+      continue;
+    }
+
+    await caddy.upsertAppRoute(project.name, containers.upstreamFor(name));
+    restored += 1;
+
+    // Rullerende utrulling som ble avbrutt midtveis (backend drept mellom
+    // helsesjekk og opprydding) etterlater to kjørende containere. Vi rører dem
+    // ikke her – neste deployment rydder – men det skal være synlig i loggen.
+    const running = await containers.countRunning(project);
+    if (running > 1) {
+      logger.warn(
+        { project: project.name, running, routedTo: name },
+        "Flere kjørende containere for prosjektet – rest fra en avbrutt deployment",
+      );
+    }
+  }
+
+  logger.info({ restored, skipped }, "Caddy-ruter synkronisert mot Supabase");
+  return { restored, skipped };
+}
+
+/** Stopper applikasjonen og fjerner ruten. Brukes når et prosjekt slettes. */
+export async function teardownProject(project: Project): Promise<void> {
+  await caddy.removeAppRoute(project.name);
+  await containers.removeContainer(project);
+
+  // Statiske filer ligger på et delt volum og forsvinner ikke med containeren.
+  // Kjøres også for prosjekter som aldri var statiske – da er det en no-op.
+  await removeProjectSites(project.id).catch((error: unknown) => {
+    logger.warn({ project: project.name, err: error }, "Kunne ikke fjerne statiske filer");
+  });
+
+  logger.info({ project: project.name }, "Prosjektet er tatt ned");
+}
+
+async function directoryExists(directory: string): Promise<boolean> {
+  return await stat(directory).then(
+    (info) => info.isDirectory(),
+    () => false,
+  );
+}

@@ -1,0 +1,108 @@
+{
+  "admin": {
+    "listen": "0.0.0.0:2019",
+    "config": {
+      "persist": false
+    },
+    "origins": ["caddy:2019", "localhost:2019", "127.0.0.1:2019", "[::1]:2019"]
+  },
+  "logging": {
+    "logs": {
+      "default": {
+        "level": "INFO"
+      }
+    }
+  },
+  "apps": {
+    "http": {
+      "servers": {
+        "snoat": {
+          "listen": [":80", ":443"],
+          "routes": [
+            {
+              "@id": "snoat_platform_frontend",
+              "match": [{ "host": ["snoat.com", "www.snoat.com", "snoat.localhost"] }],
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "frontend:3000" }]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "@id": "snoat_platform_api",
+              "match": [{ "host": ["api.snoat.com", "api.snoat.localhost", "supabase.snoat.com", "supabase.snoat.localhost"] }],
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "match": [
+                        {
+                          "path": [
+                            "/auth/v1/*",
+                            "/rest/v1/*",
+                            "/realtime/v1/*",
+                            "/storage/v1/*",
+                            "/graphql/v1/*",
+                            "/pg/v1/*"
+                          ]
+                        }
+                      ],
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [{ "dial": "kong:8000" }]
+                        }
+                      ]
+                    },
+                    {
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [{ "dial": "backend:3000" }]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "@id": "snoat_platform_studio",
+              "match": [{ "host": ["studio.snoat.com", "studio.snoat.localhost"] }],
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "studio:3000" }]
+                }
+              ],
+              "terminal": true
+            },
+            {
+              "@id": "snoat_apps",
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": []
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 404,
+                  "headers": { "Content-Type": ["text/plain; charset=utf-8"] },
+                  "body": "snoat – ingen applikasjon er rutet til dette domenet.\n"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

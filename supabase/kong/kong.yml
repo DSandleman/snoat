@@ -1,0 +1,53 @@
+_format_version: "2.1"
+_transform: true
+
+###
+# Snoat API-gateway for den selvhostede Supabase-instansen.
+#
+# Avvik fra Supabase sin offisielle self-host-config: vi kjører uten `key-auth`-
+# plugin og consumers. supabase-js sender uansett `Authorization: Bearer <jwt>`,
+# og både GoTrue og PostgREST validerer den signaturen selv mot JWT_SECRET.
+# Gatewayen gjør altså kun ruting + CORS, ikke autentisering.
+###
+
+services:
+  - name: auth-v1
+    url: http://auth:9999/
+    routes:
+      - name: auth-v1-route
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      - name: cors
+
+  - name: rest-v1
+    url: http://rest:3000/
+    routes:
+      - name: rest-v1-route
+        strip_path: true
+        paths:
+          - /rest/v1/
+    plugins:
+      - name: cors
+
+  # Realtime resolver tenant ut fra Host-headeren, derfor det spesielle
+  # containernavnet `realtime-dev.supabase-realtime` (tenant = "realtime-dev").
+  - name: realtime-v1-ws
+    url: http://realtime-dev.supabase-realtime:4000/socket
+    protocol: http
+    routes:
+      - name: realtime-v1-ws-route
+        strip_path: true
+        paths:
+          - /realtime/v1/
+    plugins:
+      - name: cors
+
+  - name: meta
+    url: http://meta:8080/
+    routes:
+      - name: meta-route
+        strip_path: true
+        paths:
+          - /pg/

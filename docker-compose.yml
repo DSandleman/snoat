@@ -1,0 +1,400 @@
+###############################################################################
+# Snoat – lokal plattform-stack
+#
+#   Supabase (db/auth/rest/realtime/studio)  ->  tilstand, auth og GDPR-data
+#   Caddy                                    ->  dynamisk reverse proxy
+#   backend                                  ->  bygge-motor (Nixpacks + Dockerode)
+#
+# Kom i gang:
+#   node scripts/bootstrap-env.mjs
+#   docker compose up -d
+#
+# Domener (alle *.localhost peker automatisk på 127.0.0.1 i moderne nettlesere):
+#   http://api.snoat.localhost        Snoat backend-API
+#   http://supabase.snoat.localhost   Supabase API-gateway
+#   http://studio.snoat.localhost     Supabase Studio
+#   http://<prosjekt>.snoat.localhost Deployede brukerapplikasjoner
+###############################################################################
+
+name: snoat
+
+x-db-env: &db-env
+  POSTGRES_HOST: /var/run/postgresql
+  POSTGRES_PORT: 5432
+  POSTGRES_DB: ${POSTGRES_DB:-postgres}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD mangler – kjør scripts/bootstrap-env.mjs}
+
+services:
+  # ---------------------------------------------------------------------------
+  # Supabase
+  # ---------------------------------------------------------------------------
+  db:
+    image: supabase/postgres:17.6.1.157-mmlb
+    restart: unless-stopped
+    environment:
+      <<: *db-env
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXP: ${JWT_EXPIRY:-3600}
+    command:
+      - postgres
+      - -c
+      - config_file=/etc/postgresql/postgresql.conf
+      - -c
+      - wal_level=logical
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # Monteres som enkeltfil: postgres-entrypointet leser kun *.sql direkte i
+      # katalogen, ikke i underkataloger. `zzz-`-prefikset gjør at scriptet
+      # kjører etter Supabase sine egne init-scripts.
+      - ./supabase/db/init/zzz-01-snoat-roles.sql:/docker-entrypoint-initdb.d/zzz-01-snoat-roles.sql:ro
+    ports:
+      # Kun loopback – databasen skal aldri være eksponert utenfor maskinen.
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [snoat]
+
+  # GoTrue henter e-postmaler over HTTP, ikke fra disk – en filsti i
+  # GOTRUE_MAILER_TEMPLATES_* blir tolket relativt til SITE_URL, feiler stille,
+  # og e-posten sendes med GoTrues egen standardmal i stedet. Derfor serveres
+  # malene her, kun på det interne nettverket.
+  mail-templates:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    command: caddy file-server --root /srv --listen :80
+    volumes:
+      - ./supabase/auth/templates:/srv:ro
+    networks: [snoat]
+
+  auth:
+    image: supabase/gotrue:v2.193.1
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      mail-templates:
+        condition: service_started
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: "9999"
+      API_EXTERNAL_URL: ${API_EXTERNAL_URL}
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-postgres}
+
+      GOTRUE_SITE_URL: ${SITE_URL}
+      GOTRUE_URI_ALLOW_LIST: ${ADDITIONAL_REDIRECT_URLS}
+      GOTRUE_DISABLE_SIGNUP: ${DISABLE_SIGNUP:-false}
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: ${JWT_EXPIRY:-3600}
+      GOTRUE_JWT_SECRET: ${JWT_SECRET}
+
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: ${ENABLE_EMAIL_SIGNUP:-true}
+      # Må stå false i produksjon. Autoconfirm markerer e-poster som bekreftet
+      # uten at noen beviser eierskap, og da kan en angriper forhåndsregistrere
+      # en adresse og få OAuth-identiteten til offeret lenket inn i sin konto.
+      GOTRUE_MAILER_AUTOCONFIRM: ${ENABLE_EMAIL_AUTOCONFIRM:-false}
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: ${ENABLE_ANONYMOUS_USERS:-false}
+
+      # SMTP via Resend. Brukernavnet er alltid literalen "resend"; passordet
+      # er API-nøkkelen. Avsenderdomenet må være verifisert hos Resend.
+      GOTRUE_SMTP_HOST: ${SMTP_HOST:-smtp.resend.com}
+      GOTRUE_SMTP_PORT: ${SMTP_PORT:-587}
+      GOTRUE_SMTP_USER: ${SMTP_USER:-resend}
+      GOTRUE_SMTP_PASS: ${RESEND_API_KEY}
+      GOTRUE_SMTP_ADMIN_EMAIL: ${SMTP_ADMIN_EMAIL}
+      GOTRUE_SMTP_SENDER_NAME: ${SMTP_SENDER_NAME:-Snoat}
+      GOTRUE_SMTP_MAX_FREQUENCY: ${SMTP_MAX_FREQUENCY:-60s}
+
+      GOTRUE_MAILER_URLPATHS_INVITE: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_CONFIRMATION: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_RECOVERY: /auth/v1/verify
+      GOTRUE_MAILER_URLPATHS_EMAIL_CHANGE: /auth/v1/verify
+
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: http://mail-templates/confirmation.html
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: http://mail-templates/recovery.html
+      GOTRUE_MAILER_TEMPLATES_INVITE: http://mail-templates/invite.html
+      GOTRUE_MAILER_TEMPLATES_EMAIL_CHANGE: http://mail-templates/email_change.html
+
+      # Malene er norske – emnefeltene må følge etter, ellers får brukeren en
+      # engelsk emnelinje over norsk brødtekst.
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: Bekreft e-postadressen din
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: Tilbakestill passordet ditt
+      GOTRUE_MAILER_SUBJECTS_INVITE: Du er invitert til Snoat
+      GOTRUE_MAILER_SUBJECTS_EMAIL_CHANGE: Bekreft ny e-postadresse
+
+      # GitHub OAuth – aktiveres i .env når appen er registrert hos GitHub.
+      GOTRUE_EXTERNAL_GITHUB_ENABLED: ${GITHUB_OAUTH_ENABLED:-false}
+      GOTRUE_EXTERNAL_GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID:-}
+      GOTRUE_EXTERNAL_GITHUB_SECRET: ${GITHUB_CLIENT_SECRET:-}
+      GOTRUE_EXTERNAL_GITHUB_REDIRECT_URI: ${API_EXTERNAL_URL}/auth/v1/callback
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [snoat]
+
+  rest:
+    image: postgrest/postgrest:v14.16
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGRST_DB_URI: postgres://authenticator:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-postgres}
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: ${JWT_SECRET}
+      PGRST_DB_USE_LEGACY_GUCS: "false"
+      PGRST_APP_SETTINGS_JWT_SECRET: ${JWT_SECRET}
+      PGRST_APP_SETTINGS_JWT_EXP: ${JWT_EXPIRY:-3600}
+    command: ["postgrest"]
+    networks: [snoat]
+
+  realtime:
+    image: supabase/realtime:v2.121.1
+    # Realtime slår opp tenant ut fra Host-headeren. Kong ruter til
+    # `realtime-dev.supabase-realtime`, som gir tenant-id "realtime-dev".
+    container_name: realtime-dev.supabase-realtime
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: "4000"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: supabase_admin
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_NAME: ${POSTGRES_DB:-postgres}
+      DB_AFTER_CONNECT_QUERY: "SET search_path TO _realtime"
+      DB_ENC_KEY: ${REALTIME_ENC_KEY}
+      API_JWT_SECRET: ${JWT_SECRET}
+      # v2.121.1 kaller System.fetch_env!/1 på denne og krasjer i boot uten den.
+      METRICS_JWT_SECRET: ${JWT_SECRET}
+      SECRET_KEY_BASE: ${REALTIME_SECRET_KEY_BASE}
+      ERL_AFLAGS: -proto_dist inet_tcp
+      DNS_NODES: "''"
+      RLIMIT_NOFILE: "10000"
+      APP_NAME: realtime
+      SEED_SELF_HOST: "true"
+      RUN_JANITOR: "true"
+    networks: [snoat]
+
+  # meta og studio ligger bak «studio»-profilen og starter derfor *ikke* med et
+  # rent `docker compose up -d`. De er utviklerverktøy: studio er det største
+  # minneforbruket i stacken, og meta finnes kun for å betjene studio – ingen
+  # annen tjeneste kaller den. På en liten produksjonsboks er de 250 MB som
+  # heller bør gå til byggejobber.
+  #
+  # Slå dem på ved å sette COMPOSE_PROFILES=studio i .env (gjøres lokalt), eller
+  # kjør `docker compose --profile studio up -d`.
+  meta:
+    image: supabase/postgres-meta:v0.96.6
+    profiles: ["studio"]
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PG_META_PORT: "8080"
+      PG_META_DB_HOST: db
+      PG_META_DB_PORT: "5432"
+      PG_META_DB_NAME: ${POSTGRES_DB:-postgres}
+      PG_META_DB_USER: supabase_admin
+      PG_META_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    networks: [snoat]
+
+  studio:
+    image: supabase/studio:2026.07.27-sha-cbb076d
+    profiles: ["studio"]
+    restart: unless-stopped
+    depends_on:
+      - meta
+      - kong
+    environment:
+      STUDIO_PG_META_URL: http://meta:8080
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DEFAULT_ORGANIZATION_NAME: Frostbyte Group AS
+      DEFAULT_PROJECT_NAME: Snoat
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL:-https://api.snoat.com}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+      SUPABASE_SERVICE_KEY: ${SERVICE_ROLE_KEY}
+      AUTH_JWT_SECRET: ${JWT_SECRET}
+      # Analytics-tjenesten (Logflare) er bevisst utelatt fra MVP-stacken.
+      NEXT_PUBLIC_ENABLE_LOGS: "false"
+      NEXT_ANALYTICS_BACKEND_PROVIDER: postgres
+    networks: [snoat]
+
+  kong:
+    image: kong:2.8.1
+    restart: unless-stopped
+    depends_on:
+      auth:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /home/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors
+      KONG_NGINX_PROXY_PROXY_BUFFER_SIZE: 160k
+      KONG_NGINX_PROXY_PROXY_BUFFERS: 64 160k
+    volumes:
+      - ./supabase/kong/kong.yml:/home/kong/kong.yml:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [snoat]
+
+  # Kjører applikasjonsmigrasjonene våre etter at GoTrue har opprettet auth.users.
+  db-migrate:
+    image: postgres:17-alpine
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./supabase/migrations:/migrations:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        for f in /migrations/*.sql; do
+          echo "==> $$f"
+          psql -v ON_ERROR_STOP=1 -h db -U postgres -d "${POSTGRES_DB:-postgres}" -f "$$f"
+        done
+        echo "Migrasjoner fullført."
+    restart: "no"
+    networks: [snoat]
+
+  # ---------------------------------------------------------------------------
+  # Snoat-plattformen
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    command: ["caddy", "run", "--config", "/etc/caddy/config.json"]
+    volumes:
+      - ./caddy/config.json:/etc/caddy/config.json:ro
+      - caddy-data:/data
+      - caddy-config:/config
+      # Statiske sider. Skrivebeskyttet: Caddy skal servere dem, aldri endre dem.
+      - snoat-sites:${SNOAT_SITES_DIR:-/srv/sites}:ro
+    ports:
+      - "80:80"
+      - "443:443"
+      # Admin-API-et er hvordan backend oppretter ruter. Kun loopback.
+      - "127.0.0.1:2019:2019"
+    networks:
+      # Caddy må ligge på begge nettverk: plattformtjenester + brukerapplikasjoner.
+      - snoat
+      - snoat_apps
+
+  backend:
+    build:
+      context: ./backend
+      # dev = hot reload lokalt, production = bygget artefakt på VPS-en.
+      # Settes av scripts/bootstrap-env.mjs ut fra SNOAT_DOMAIN.
+      target: ${BACKEND_BUILD_TARGET:-dev}
+    restart: unless-stopped
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      caddy:
+        condition: service_started
+    environment:
+      # NODE_ENV settes av Dockerfile-targetet (dev -> development).
+      PORT: "3000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      SUPABASE_URL: http://kong:8000
+      SUPABASE_SERVICE_ROLE_KEY: ${SERVICE_ROLE_KEY}
+      SUPABASE_ANON_KEY: ${ANON_KEY}
+
+      CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://caddy:2019}
+      SNOAT_APP_DOMAIN_SUFFIX: ${SNOAT_APP_DOMAIN_SUFFIX:-.snoat.localhost}
+      SNOAT_APPS_NETWORK: ${SNOAT_APPS_NETWORK:-snoat_apps}
+      SNOAT_FRONTEND_ORIGIN: ${SNOAT_FRONTEND_ORIGIN:-http://localhost:8080}
+      SNOAT_APP_PORT: ${SNOAT_APP_PORT:-3000}
+      SNOAT_APP_MEMORY_MB: ${SNOAT_APP_MEMORY_MB:-512}
+      SNOAT_APP_CPUS: ${SNOAT_APP_CPUS:-1}
+      SNOAT_APP_STOP_TIMEOUT_S: ${SNOAT_APP_STOP_TIMEOUT_S:-10}
+      SNOAT_BUILD_TIMEOUT_MS: ${SNOAT_BUILD_TIMEOUT_MS:-1800000}
+      SNOAT_DEFAULT_NODE_VERSION: ${SNOAT_DEFAULT_NODE_VERSION:-22}
+      SNOAT_MAX_CONCURRENT_BUILDS: ${SNOAT_MAX_CONCURRENT_BUILDS:-1}
+      SNOAT_BUILD_NODE_MEMORY_MB: ${SNOAT_BUILD_NODE_MEMORY_MB:-1536}
+      SNOAT_SITES_DIR: ${SNOAT_SITES_DIR:-/srv/sites}
+      SNOAT_STATIC_KEEP_VERSIONS: ${SNOAT_STATIC_KEEP_VERSIONS:-3}
+      SNOAT_WORKSPACE_DIR: ${SNOAT_WORKSPACE_DIR:?SNOAT_WORKSPACE_DIR mangler – kjør scripts/bootstrap-env.mjs}
+      DOCKER_HOST: unix:///var/run/docker.sock
+
+      # GitHub App – repo-velger og private repoer. Valgfri; uten disse svarer
+      # /api/github/* 503 og dashboardet faller tilbake til å lime inn URL.
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_STATE_SECRET: ${GITHUB_APP_STATE_SECRET:-}
+      # Signaturen på webhooks (automatisk deploy ved push). Uten den tas
+      # webhooks imot uverifisert – se CONTEXT_FOR_AI/08_security_model.md.
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+    volumes:
+      # Backend styrer Docker-daemonen på hosten (Dockerode + nixpacks).
+      # Docker Desktop legger ikke alltid socketen på /var/run/docker.sock –
+      # bootstrap-scriptet leser den faktiske stien fra `docker context`.
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      # Samme absolutte sti på begge sider: nixpacks sender build-contexten
+      # videre til host-daemonen, som må kunne løse nøyaktig samme sti.
+      - ${SNOAT_WORKSPACE_DIR}:${SNOAT_WORKSPACE_DIR}
+      # Ferdigbygde statiske sider. Backend skriver, Caddy leser – derfor må
+      # begge ha volumet montert på samme sti (SNOAT_SITES_DIR).
+      - snoat-sites:${SNOAT_SITES_DIR:-/srv/sites}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-3100}:3000"
+    networks: [snoat]
+
+  frontend:
+    build:
+      context: ./frontend
+      # Vite baker VITE_-variablene inn i bundlen under `npm run build`. De må
+      # derfor sendes inn som build-args – som `environment` ville de kommet
+      # for sent, og bundlen ville pekt på hva enn builden så.
+      args:
+        VITE_SUPABASE_URL: ${VITE_SUPABASE_URL:?VITE_SUPABASE_URL mangler – kjør scripts/bootstrap-env.mjs}
+        VITE_SUPABASE_ANON_KEY: ${ANON_KEY}
+        VITE_SNOAT_API_URL: ${VITE_SNOAT_API_URL:-${VITE_SUPABASE_URL}}
+        VITE_SNOAT_APP_DOMAIN_SUFFIX: ${VITE_SNOAT_APP_DOMAIN_SUFFIX:-${SNOAT_APP_DOMAIN_SUFFIX:-.snoat.com}}
+        VITE_SNOAT_SERVER_IP: ${VITE_SNOAT_SERVER_IP:-${SNOAT_SERVER_IP:-38.87.117.167}}
+    restart: unless-stopped
+    depends_on:
+      - kong
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+    networks: [snoat]
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:
+  # Statiske sider som serveres uten container. Skrives av backend, leses av Caddy.
+  snoat-sites:
+
+networks:
+  snoat:
+    name: snoat
+  # Deployede brukerapplikasjoner kobles hit av backend, slik at Caddy når dem
+  # på containernavn uten å eksponere porter på hosten.
+  snoat_apps:
+    name: snoat_apps
