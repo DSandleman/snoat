@@ -20,6 +20,43 @@ const routeId = (slug: string) => `snoat_app_${slug}`;
 export const appHostname = (slug: string) => `${slug}${config.SNOAT_APP_DOMAIN_SUFFIX}`;
 
 /**
+ * Full URL til appen. `http` lokalt, `https` i produksjon – slik Caddy kjører.
+ *
+ * Speiler `projectUrl()` i frontend (`lib/platform.ts`) med vilje: de to må gi
+ * samme svar, ellers viser dashboardet én lenke og `deployments.url` en annen.
+ *
+ * Skjemaet avledes av vertsnavnet framfor å være enda en miljøvariabel. En
+ * variabel til er en variabel som kan settes feil, og da peker lenkene brukeren
+ * får et sted som ikke svarer. `.localhost` betjenes av Caddys interne CA, der
+ * sertifikatet ikke er tillitt lokalt – der er `http` det riktige svaret.
+ */
+export function appUrl(slug: string): string {
+  const hostname = appHostname(slug);
+  const isLocal = hostname === "localhost" || hostname.endsWith(".localhost");
+  return `${isLocal ? "http" : "https"}://${hostname}`;
+}
+
+/**
+ * Motsatt vei av `appHostname`: hvilket prosjekt et domene tilhører.
+ *
+ * Brukes av TLS-tillatelsessjekken (`routes/tls.ts`) til å avgjøre om Caddy skal
+ * hente sertifikat for et navn. Returnerer `null` for alt som ikke er formet som
+ * nøyaktig ett Snoat-appdomene, slik at kallet aldri kan slå opp på noe annet
+ * enn en prosjekt-slug.
+ */
+export function slugFromHostname(hostname: string): string | null {
+  const suffix = config.SNOAT_APP_DOMAIN_SUFFIX;
+
+  if (!hostname.endsWith(suffix)) return null;
+
+  const slug = hostname.slice(0, -suffix.length);
+
+  // Én etikett, samme form som `projects.name`. Et navn med punktum i seg er et
+  // dypere subdomene vi ikke ruter, og skal ikke gi sertifikat.
+  return /^[a-z0-9-]+$/.test(slug) ? slug : null;
+}
+
+/**
  * `handle` er bevisst løst typet: en rute peker enten på en container
  * (`reverse_proxy`) eller på en katalog med statiske filer (`file_server`), og
  * de to har ikke felles form. Vi leser aldri ut av den uten å sjekke hva vi
@@ -178,7 +215,7 @@ async function upsertRoute(
   try {
     await request("PATCH", `/id/${routeId(slug)}`, route);
     logger.info({ slug, hostname, ...logContext }, "Caddy-rute byttet");
-    return `http://${hostname}`;
+    return appUrl(slug);
   } catch (error) {
     // Første deployment: ruten finnes ikke ennå, så det er ingenting å bytte.
     if (!isUnknownObject(error)) throw error;
@@ -187,7 +224,7 @@ async function upsertRoute(
   await request("POST", APPS_ROUTES_PATH, route);
 
   logger.info({ slug, hostname, ...logContext }, "Caddy-rute opprettet");
-  return `http://${hostname}`;
+  return appUrl(slug);
 }
 
 /**

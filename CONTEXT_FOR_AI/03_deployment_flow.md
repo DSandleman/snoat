@@ -99,6 +99,23 @@ overstyrt et bevisst valg. Valget skrives til byggeloggen (`Node-versjon: 22
 (Snoat-standard, repoet oppgir ingen)`), slik at det er etterprøvbart når et
 bygg ryker.
 
+**Kun major-nummeret teller.** Nixpacks slår majoren opp i sin egen tabell over
+nixpkgs-pins (`AVAILABLE_NODE_VERSIONS`: 14, 16, 18, 20, 22, 24 – lista endrer
+seg mellom Nixpacks-versjoner) og bygger med `nodejs_<major>`. Minor og patch
+kastes bort: `22.13` gir nøyaktig samme Node som `22`, nemlig den 22.x den
+pinnede nixpkgs-en inneholder. Serveren kjører i dag Nixpacks 1.41.0 og lander på
+**Node 22.11.0**.
+
+Det har en praktisk konsekvens: pakker som krever `^22.13.0` gir `EBADENGINE`, og
+det kan ikke løses ved å skrive en mer presis versjon noe sted. Eneste vei til en
+nyere 22.x er å oppgradere Nixpacks selv.
+
+> ⚠️ En major Nixpacks *ikke* kjenner gir ingen feilmelding. `version_number_to_pkg()`
+> faller stille tilbake til `nodejs_18` – det stikk motsatte av hensikten med
+> `SNOAT_DEFAULT_NODE_VERSION`. Hever du standarden, verifiser mot den installerte
+> Nixpacks-versjonen og bekreft i byggeloggen at `setup`-raden faktisk viser den
+> majoren du ba om.
+
 **Minnetak under bygging.** `NODE_OPTIONS=--max-old-space-size=$SNOAT_BUILD_NODE_MEMORY_MB`
 injiseres når prosjektet ikke setter `NODE_OPTIONS` selv. `next build` tar så mye
 heap den får lov til; uten taket er det verten som setter grensen, og da er det
@@ -241,6 +258,54 @@ image-et er artefakten vi beholder.
 Hvert steg kaster `DeployError` med et stegnavn. Pipelinen fanger alt, skriver
 feilmeldingen inn i byggeloggen, setter status `failed` og rydder
 arbeidsområdet. Brukeren ser hvilket steg som feilet og hvorfor, i loggvinduet.
+
+**Byggefeil oversettes til noe brukeren kan handle på.** Et mislykket
+`nixpacks build` etterlater flere hundre linjer BuildKit-output. Nederst står som
+regel én linje som forklarer alt, men den drukner i lagnedlastinger og nix-stier.
+«Se loggen over for detaljer» er derfor å be kunden lete etter noe de ikke vet
+hvordan ser ut.
+
+`services/build-diagnosis.ts` kjenner igjen de feilene som faktisk oppstår, og
+sier hva de betyr. `nixpacks.ts` holder de siste 64 000 tegnene av outputen –
+feilen står alltid nederst – og sender dem gjennom `describeBuildFailure()` når
+bygget gir opp.
+
+| Signatur i loggen | Diagnose |
+| --- | --- |
+| `JavaScript heap out of memory` | traff minnetaket; hvordan man hever det |
+| `Failed to type check` / `Type error:` / `error TS…` | typefeil, med `fil:linje` og meldingen |
+| låsefil ute av takt / `EUSAGE` | `npm ci` krever at `package-lock.json` stemmer |
+| `npm error code EBADENGINE` | pakken krever en annen Node-versjon |
+| `ERESOLVE` | avhengighetskonflikt |
+| `npm error 404` | pakken finnes ikke i registeret |
+| `Missing script:` | byggekommandoen mangler i `package.json` |
+| `Module not found: Can't resolve` | import peker på ingenting – ofte feil bokstavstørrelse |
+| `Cannot find module` | pakken mangler i `package.json` |
+
+Signaturene er bevisst konservative og matcher tekst verktøyene skriver ordrett.
+Rekkefølgen i tabellen er også prioriteringen: den mest spesifikke først, fordi
+et bygg som går tom for minne kan rive med seg moduler på vei ned. Treffer ingen
+signatur, faller vi tilbake til den generelle meldingen – **en gjetning som er
+feil er verre enn ingen gjetning**.
+
+Merk at diagnosen for typefeil sier eksplisitt at Snoat *ikke* skrur av
+typesjekking. Å gjøre det ville byttet en synlig byggefeil mot en usynlig
+produksjonsfeil, og kunden ville fått vite om den fra sluttbrukerne sine i stedet
+for fra loggen. Skal et prosjekt bygges uten typesjekk, er det kundens eget valg
+i deres egen konfigurasjon.
+
+**Samme commit to ganger på rad.** Den vanligste grunnen til at «samme feil kom
+igjen» er ikke at rettelsen ikke virket, men at den aldri forlot maskinen. Snoat
+kloner standardgrenen fra GitHub, så en fiks som ligger ucommittet – eller
+committet uten push – finnes ikke her. Kunden ser da en byggelogg identisk med
+forrige, uten noen ledetråd.
+
+`warnOnRepeatedFailedCommit()` i `deploy.ts` slår opp forrige deployment for
+prosjektet rett etter kloningen. Er den `failed` og har samme `commit_hash`,
+skrives en advarsel før byggesteget. Gikk forrige bygg bra, sies ingenting – å
+deploye samme commit på nytt er helt normalt ved omstart eller endret
+miljøvariabel. Oppslaget får aldri velte deploymenten; feiler det, bygger vi
+videre i stillhet.
 
 **En feilet deployment koster ikke nedetid.** Alt som skjer før steg 6 rører ikke
 den kjørende versjonen: klone, build og den nye containeren er nye artefakter ved

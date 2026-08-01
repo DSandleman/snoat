@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { DashboardNav } from "@/components/DashboardNav";
-import { DeploymentLogsDialog } from "@/components/DeploymentLogsDialog";
+
 import { DeploymentStatusBadge } from "@/components/DeploymentStatusBadge";
 import { useDeploymentsRealtime } from "@/hooks/useDeploymentsRealtime";
 import {
@@ -172,7 +172,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [showLogs, setShowLogs] = useState(false);
+  const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
 
   const deployment = project.latestDeployment;
@@ -186,8 +186,12 @@ function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
     mutationFn: () => deployProject(project.id),
     onSuccess: async () => {
       setError(null);
-      setShowLogs(true);
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void navigate({
+        to: "/projects/$projectId",
+        params: { projectId: project.id },
+        search: { tab: "terminal" },
+      });
     },
     onError: (cause: Error) => setError(cause.message),
   });
@@ -263,13 +267,6 @@ function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
         </button>
       </div>
 
-      {showLogs && deployment && (
-        <DeploymentLogsDialog
-          deployment={deployment}
-          projectName={project.name}
-          onClose={() => setShowLogs(false)}
-        />
-      )}
     </article>
   );
 }

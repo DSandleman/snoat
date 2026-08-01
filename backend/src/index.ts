@@ -10,6 +10,7 @@ import { logger } from "./lib/logger.js";
 import * as supabaseLib from "./lib/supabase.js";
 import { api } from "./routes/api.js";
 import { githubSetup } from "./routes/github.js";
+import { tlsPermission } from "./routes/tls.js";
 import { githubWebhooks } from "./routes/webhooks.js";
 import { failOrphanedDeployments, reconcileRoutes } from "./services/deploy.js";
 
@@ -67,6 +68,15 @@ app.get("/health", async (c) => {
 app.route("/api/webhooks", githubWebhooks);
 
 app.route("/api", api);
+
+/**
+ * Caddys tillatelsessjekk for on-demand TLS.
+ *
+ * Utenfor `/api` med vilje, av samme grunn som `/github`: Caddy kaller den fra
+ * proxy-laget uten Authorization-header, så `requireAuth` ville avvist den.
+ * Se `routes/tls.ts` for hvorfor det er trygt at ruten er offentlig lesbar.
+ */
+app.route("/internal", tlsPermission);
 
 /**
  * GitHub App-installasjonen lander her.

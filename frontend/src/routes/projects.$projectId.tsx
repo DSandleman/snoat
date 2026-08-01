@@ -12,6 +12,11 @@ import { deployProject, stopProject } from "@/lib/api";
 import type { Deployment, Project } from "@/lib/database.types";
 
 export const Route = createFileRoute("/projects/$projectId")({
+  validateSearch: (search: Record<string, unknown>): { tab?: string } => {
+    return {
+      tab: typeof search.tab === "string" ? search.tab : undefined,
+    };
+  },
   component: ProjectDetailPage,
 });
 
@@ -28,12 +33,13 @@ const TABS: ReadonlyArray<{ id: Tab; icon: string; labelKey: string }> = [
 
 function ProjectDetailPage() {
   const { projectId } = Route.useParams();
+  const search = Route.useSearch();
   const { user, loading, signOut } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  const [activeTab, setActiveTab] = useState<Tab>("deployments");
+  const [activeTab, setActiveTab] = useState<Tab>((search.tab as Tab) || "deployments");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -454,12 +460,11 @@ function BuildStageCard({ deployment }: { deployment: Deployment | null }) {
   }
 
   return (
-    <div className="rounded-2xl bg-surface-container/60 p-5 shadow-[inset_0_1px_0_0_oklch(1_0_0/5%)] border border-surface-variant/20 flex flex-col gap-3 transition-all">
+    <div className="flex flex-col gap-3 transition-all">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
           {isBuilding ? (
-            <div className="relative flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-30" />
+            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
               <span className="material-symbols-outlined icon-sm text-primary animate-spin">progress_activity</span>
             </div>
           ) : isSuccess ? (
@@ -482,7 +487,7 @@ function BuildStageCard({ deployment }: { deployment: Deployment | null }) {
             </span>
             <span className="font-body text-xs text-on-surface-variant">
               {isBuilding
-                ? (buildDuration ? `${stageText} (${buildDuration})` : stageText)
+                ? stageText
                 : isSuccess
                 ? (buildDuration ? `Kjører og svarer på forespørsler • Byggetid: ${buildDuration}` : "Kjører og svarer på forespørsler")
                 : isFailed
@@ -492,12 +497,6 @@ function BuildStageCard({ deployment }: { deployment: Deployment | null }) {
           </div>
         </div>
 
-        {isBuilding && (
-          <span className="font-mono text-xs text-primary font-medium bg-primary/10 px-3 py-1 rounded-full animate-pulse flex items-center gap-1.5">
-            <span className="material-symbols-outlined icon-sm">timer</span>
-            {buildDuration ? `Bygger: ${buildDuration}` : "Aktiv prosess…"}
-          </span>
-        )}
       </div>
     </div>
   );

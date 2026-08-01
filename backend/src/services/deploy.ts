@@ -188,6 +188,58 @@ export async function startDeployment(project: Project): Promise<Deployment> {
 }
 
 /**
+ * Advarer når bygget kjører på nøyaktig samme commit som sist, og sist feilet.
+ *
+ * Den vanligste grunnen til at «samme feil kom igjen» er ikke at fiksen ikke
+ * virket, men at den aldri forlot maskinen. Snoat kloner standardgrenen fra
+ * GitHub, så en rettelse som ligger ucommittet – eller committet uten push –
+ * finnes rett og slett ikke her. Brukeren ser da en byggelogg som er identisk
+ * med forrige, uten noen ledetråd om hvorfor.
+ *
+ * Vi har commiten fra begge deployments allerede, så sammenligningen er gratis.
+ * Advarselen står før byggesteget, slik at den er lest før loggen fylles opp.
+ *
+ * Ingenting her får velte deploymenten: dette er en hjelpsom observasjon, ikke
+ * en betingelse for å bygge. Feiler oppslaget, bygger vi videre i stillhet.
+ */
+async function warnOnRepeatedFailedCommit(
+  project: Project,
+  deployment: Deployment,
+  commitHash: string,
+  logs: LogStream,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from("deployments")
+    .select("status, commit_hash")
+    .eq("project_id", project.id)
+    .neq("id", deployment.id)
+    .not("commit_hash", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    logger.warn({ project: project.name, err: error }, "Kunne ikke lese forrige deployment");
+    return;
+  }
+
+  const previous = data as Pick<Deployment, "status" | "commit_hash"> | null;
+
+  // Gikk forrige bygg bra, er det helt normalt å deploye samme commit på nytt –
+  // en omstart eller en endret miljøvariabel er gyldige grunner.
+  if (!previous || previous.status !== "failed") return;
+  if (previous.commit_hash !== commitHash) return;
+
+  logs.write(
+    `\n⚠️  Denne deploymenten bygger nøyaktig samme commit som forrige, og den feilet ` +
+      `(${commitHash.slice(0, 7)}).\n` +
+      `Snoat kloner standardgrenen fra GitHub, så endringer som ikke er committet og pushet ` +
+      `blir ikke med. Er rettelsen din pushet? Bygget under kommer til å gi samme resultat ` +
+      `som sist hvis den ikke er det.`,
+  );
+}
+
+/**
  * Peker Caddy tilbake dit trafikken gikk før deploymenten, og rydder containeren
  * som ikke ble god nok.
  *
@@ -289,7 +341,7 @@ async function deployStatic(
  * nedetid, og en feilet deployment lar den kjørende versjonen stå.
  */
 async function runPipeline(project: Project, deployment: Deployment, logs: LogStream): Promise<void> {
-  const url = `http://${caddy.appHostname(project.name)}`;
+  const url = caddy.appUrl(project.name);
   const started = Date.now();
 
   await setStatus(deployment.id, "building");
@@ -303,6 +355,10 @@ async function runPipeline(project: Project, deployment: Deployment, logs: LogSt
       project.github_installation_id,
     );
     await setStatus(deployment.id, "building", { commit_hash: commitHash });
+
+    await warnOnRepeatedFailedCommit(project, deployment, commitHash, logs).catch((error: unknown) => {
+      logger.warn({ project: project.name, err: error }, "Kunne ikke sjekke forrige commit");
+    });
 
     const image = await buildImage(project, directory, logs);
 

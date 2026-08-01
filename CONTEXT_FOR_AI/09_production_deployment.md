@@ -23,6 +23,77 @@ Caddy håndterer all innkommende trafikk på port 80 (HTTP) og 443 (HTTPS), og u
 | `studio.snoat.com` | `studio:3000` | Supabase Studio GUI. |
 | `*.snoat.com` | Caddy dynamisk subruting | Brukerapplikasjoner som deployes og kjøres av Snoat-plattformen. |
 
+### Sertifikater for kundedomener: on-demand TLS
+
+Caddys automatiske HTTPS finner domener ved å lese `host`-matchere i serverens
+**toppnivåruter**. Den stiger ikke ned i `subroute`-handlere. Siden alle
+applikasjonsruter legges inne i `snoat_apps` (`lib/caddy.ts`), ble kundedomenene
+aldri oppdaget: `<slug>.snoat.com` svarte på port 80, mens 443 avbrøt handshaken
+med `tlsv1 alert internal error` fordi Caddy ikke hadde noe sertifikat å vise.
+Plattformdomenene virket hele tiden, nettopp fordi de *er* toppnivåruter.
+
+Løsningen er on-demand TLS: Caddy henter sertifikatet under første handshake for
+et navn den ikke kjenner. `apps.tls.automation` har derfor to policyer, og
+rekkefølgen betyr noe:
+
+1. plattformdomenene listet eksplisitt under `subjects` – de beholder vanlig
+   proaktiv administrasjon, og skal *ikke* bli on-demand
+2. `{ "on_demand": true }` som catch-all for alt annet
+
+Uten sperre kunne hvem som helst pekt DNS mot oss og fått oss til å be om
+sertifikater. `on_demand.permission` spør derfor `backend:3000/internal/tls-ask`
+(`routes/tls.ts`) før hver utstedelse, og Caddy utsteder kun ved 2xx. Endepunktet
+slår slugen opp i `projects` og feiler lukket: databasefeil gir 503, ikke 200.
+
+> **Kvotetaket består.** Let's Encrypt tillater 50 sertifikater per registrert
+> domene per uke, og hvert `<slug>.snoat.com` teller. On-demand utsteder bare
+> senere, ikke sjeldnere. Skal plattformen skalere forbi det, må `*.snoat.com`
+> dekkes av ett wildcard-sertifikat via DNS-01 – det krever et Caddy-image bygget
+> med DNS-plugin og et API-token hos DNS-leverandøren.
+
+**Endring uten nedetid.** TLS-appen kan legges inn med `PUT /config/apps/tls` mot
+admin-API-et i stedet for å restarte Caddy. Da røres ikke `http`-appen, og
+apprutene som bare finnes i minnet overlever. Husk `Origin`-header med skjema
+(`http://localhost:2019`) – Caddy svarer 403 på skrivende kall uten den.
+
+### HTTP→HTTPS: ruten `snoat_https_redirect`
+
+Caddy lager **ikke** redirect-ruter av seg selv her. Den hopper over det når en
+server er eksplisitt satt opp til å lytte på `:80`, siden den da antar at du vil
+servere vanlig HTTP der. Resultatet var at ingenting omdirigerte – verken
+plattform- eller kundedomener.
+
+Første rute i `snoat`-serveren er derfor en egen 308-redirect, matchet på
+`protocol: http`. Den ligger først med vilje, slik at den dekker alle domener.
+
+> ⚠️ **ACME-stien er unntatt med en `not`-matcher.** On-demand-utstedelse løser
+> HTTP-01-utfordringen på port 80. Omdirigerer man `/.well-known/acme-challenge/*`
+> til HTTPS, kan ingen nye sertifikater utstedes – og siden HTTPS krever
+> sertifikatet som utfordringen skulle skaffe, låser det seg selv. Verifiser
+> alltid etter endringer at stien svarer noe annet enn 308:
+>
+> ```bash
+> curl -sS -o /dev/null -w "%{http_code}\n" \
+>   http://<slug>.snoat.com/.well-known/acme-challenge/testtoken   # skal IKKE vaere 308
+> ```
+
+**Caddy avviser ukjente felter i JSON.** Et `_comment`-felt gir
+`unknown field "_comment"` og hele konfigurasjonen nektes lastet. Forklaringer
+hører hjemme her i dokumentasjonen, ikke i `config.json`. Kjør
+`docker exec snoat-caddy-1 caddy validate --config /etc/caddy/config.json` etter
+endringer – en fil som ikke laster tar ned all ruting ved neste restart.
+
+**Innsetting uten å røre apprutene:** `PUT` mot en array-indeks *setter inn* i
+stedet for å erstatte, så
+
+```bash
+curl -X PUT -H "Origin: http://localhost:2019" -d @rute.json \
+  http://localhost:2019/config/apps/http/servers/snoat/routes/0
+```
+
+legger ruten først uten å skrive over `snoat_apps` og rutene som bare finnes i
+Caddys minne.
+
 ### Brukerrutene lever kun i Caddys minne
 
 Caddy startes med `--config` og `persist: false`, så rutene for `*.snoat.com`

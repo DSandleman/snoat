@@ -60,6 +60,8 @@ Docker-nettverkene er delt i to:
 | `services/git.ts` | Kloning + validering av repo-URL. |
 | `services/nixpacks.ts` | Bygger image-et. |
 | `services/runtime-versions.ts` | Avgjør språkversjon for et klonet repo: leser `engines.node`/`.nvmrc`, og setter Snoat-standarden bare når repoet ikke sier noe selv. |
+| `services/build-diagnosis.ts` | Kjenner igjen kjente byggefeil i loggen og oversetter dem til en forklaring med råd. Treffer ingen signatur, brukes den generelle meldingen. |
+| `routes/tls.ts` | Caddys tillatelsessjekk for on-demand TLS. Svarer 2xx kun for domener som tilhører et eksisterende prosjekt, og feiler lukket. Se `09_production_deployment.md`. |
 | `services/static-site.ts` | Henter byggeresultatet ut av image-et og legger det på det delte volumet Caddy serverer fra. Prosjekter med `static_output_dir` kjører ingen container. |
 | `services/containers.ts` | Oppretter, helsesjekker og pensjonerer applikasjonscontainere. Én container per deployment, funnet via labels. |
 | `services/log-stream.ts` | Buffrer byggelogg og skyller til `deployments.logs`. |

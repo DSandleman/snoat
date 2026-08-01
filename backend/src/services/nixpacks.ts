@@ -1,8 +1,19 @@
 import { execa } from "execa";
 import { config } from "../config.js";
 import { DeployError, type Project } from "../types.js";
+import { describeBuildFailure } from "./build-diagnosis.js";
 import type { LogStream } from "./log-stream.js";
 import { resolveRuntimeVersions } from "./runtime-versions.js";
+
+/**
+ * Hvor mye av byggeoutputen vi holder på for å kunne stille en diagnose.
+ *
+ * Feilen står alltid nederst, mens starten av loggen er nedlasting av nix-stier
+ * og docker-lag. Et fullt bygg kan produsere titalls megabyte, og hele loggen
+ * ligger allerede i `LogStream` – dette er kun arbeidskopien vi kjører
+ * mønstergjenkjenning mot, så halen holder.
+ */
+const DIAGNOSIS_TAIL_CHARS = 64_000;
 
 /** Image-navnet et prosjekt bygges til. Overskrives ved hver deployment. */
 export function imageNameFor(project: Project): string {
@@ -76,7 +87,13 @@ export async function buildImage(
     all: true,
   });
 
-  build.all?.on("data", (chunk: Buffer) => logs.write(chunk.toString()));
+  let tail = "";
+
+  build.all?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    logs.write(text);
+    tail = (tail + text).slice(-DIAGNOSIS_TAIL_CHARS);
+  });
 
   try {
     await build;
@@ -86,7 +103,7 @@ export async function buildImage(
       "build",
       timedOut
         ? `Byggingen brukte mer enn ${Math.round(config.SNOAT_BUILD_TIMEOUT_MS / 60000)} minutter og ble avbrutt.`
-        : "Nixpacks klarte ikke å bygge prosjektet. Se loggen over for detaljer.",
+        : describeBuildFailure(tail),
     );
   }
 

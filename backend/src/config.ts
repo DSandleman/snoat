@@ -122,9 +122,19 @@ const schema = z.object({
    * Node-versjonen prosjekter bygges med når repoet ikke oppgir en selv.
    *
    * Nixpacks faller tilbake på Node 18, som er ute av vedlikehold og ikke kan
-   * bygge moderne Next.js eller Vite. Se `runtime-versions.ts`. Verdien må være
-   * et major-nummer Nixpacks kjenner (18, 20, 22, 23) – en ukjent verdi ignoreres
-   * av Nixpacks, som da bruker sin egen standard igjen.
+   * bygge moderne Next.js eller Vite. Se `runtime-versions.ts`.
+   *
+   * Kun major-nummeret teller. Nixpacks slår opp majoren i en tabell over
+   * nixpkgs-pins (14, 16, 18, 20, 22, 24 – lista varierer med Nixpacks-versjon)
+   * og bygger med `nodejs_<major>`. Minor og patch kastes: «22.13» gir nøyaktig
+   * samme Node som «22», nemlig den 22.x den pinnede nixpkgs-en tilfeldigvis
+   * inneholder. Vil du ha en nyere 22.x, er det Nixpacks som må oppgraderes –
+   * denne verdien kan ikke styre det.
+   *
+   * ⚠️ En major Nixpacks ikke kjenner gir ingen feil. Den faller stille tilbake
+   * til `nodejs_18`, altså det stikk motsatte av hensikten. Sjekk derfor mot den
+   * installerte Nixpacks-versjonen før du hever denne, og bekreft i byggeloggen
+   * at «Node-versjon» og pakken under `setup` faktisk stemmer.
    */
   SNOAT_DEFAULT_NODE_VERSION: z.string().min(1).default("22"),
 

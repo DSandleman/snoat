@@ -14,11 +14,54 @@
     }
   },
   "apps": {
+    "tls": {
+      "automation": {
+        "policies": [
+          {
+            "subjects": [
+              "snoat.com",
+              "www.snoat.com",
+              "api.snoat.com",
+              "supabase.snoat.com",
+              "studio.snoat.com",
+              "snoat.localhost",
+              "api.snoat.localhost",
+              "supabase.snoat.localhost",
+              "studio.snoat.localhost"
+            ]
+          },
+          { "on_demand": true }
+        ],
+        "on_demand": {
+          "permission": {
+            "module": "http",
+            "endpoint": "http://backend:3000/internal/tls-ask"
+          }
+        }
+      }
+    },
     "http": {
       "servers": {
         "snoat": {
           "listen": [":80", ":443"],
           "routes": [
+            {
+              "@id": "snoat_https_redirect",
+              "match": [
+                {
+                  "protocol": "http",
+                  "not": [{ "path": ["/.well-known/acme-challenge/*"] }]
+                }
+              ],
+              "handle": [
+                {
+                  "handler": "static_response",
+                  "status_code": 308,
+                  "headers": { "Location": ["https://{http.request.host}{http.request.uri}"] }
+                }
+              ],
+              "terminal": true
+            },
             {
               "@id": "snoat_platform_frontend",
               "match": [{ "host": ["snoat.com", "www.snoat.com", "snoat.localhost"] }],
