@@ -1,22 +1,26 @@
+import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { SnoatLogo } from "@/components/SnoatLogo";
+import { getPricing } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useFormatters } from "@/lib/format";
+import { useRequestedMarket } from "@/lib/market";
 import { useTranslation } from "react-i18next";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Snoat — norsk skyinfrastruktur for moderne apper" },
+      { title: "Snoat — Cloud Infrastructure for Modern Web Apps" },
       {
         name: "description",
         content:
-          "Deploy nettside på ett klikk — 100% GDPR-vennlig på norsk infrastruktur.",
+          "Deploy your website in one click. Snoat is a 100% GDPR-compliant European Vercel alternative built on lightning-fast infrastructure.",
       },
-      { property: "og:title", content: "Snoat — norsk skyinfrastruktur for moderne apper" },
+      { property: "og:title", content: "Snoat — Cloud Infrastructure for Modern Web Apps" },
       {
         property: "og:description",
-        content: "Deploy nettside på ett klikk — 100% GDPR-vennlig på norsk infrastruktur.",
+        content: "Deploy your website in one click. Snoat is a 100% GDPR-compliant European Vercel alternative built on lightning-fast infrastructure.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -59,6 +63,79 @@ const features = [
     bodyKey: "features.backend.body",
   },
 ];
+
+/**
+ * Prisseksjonen på landingssiden.
+ *
+ * ⚠️ **Prisene hentes fra `/api/pricing`, ikke fra oversettelsene.** De sto
+ * tidligere som ferdige strenger («199 kr / mnd») i `translation.json`, og det
+ * fusjonerte tre ting i én verdi: tallet, valutaen og språket. En prisendring
+ * ble dermed en oversettelsesoppgave i hver eneste språkfil, og euro var umulig
+ * uten å duplisere hele seksjonen. Verre: strengene sa fortsatt «Hobby /
+ * Standard / Enterprise» mens håndhevingen i backend het Free / Pro / Business,
+ * så prissiden og virkeligheten hadde allerede kommet i utakt.
+ *
+ * Nå kommer tallene fra samme funksjon som dashboardet bruker, og
+ * oversettelsene inneholder bare teksten rundt dem.
+ */
+function PricingSection() {
+  const { t } = useTranslation();
+  const format = useFormatters();
+  const market = useRequestedMarket();
+
+  const pricing = useQuery({
+    queryKey: ["pricing", market],
+    queryFn: () => getPricing(market),
+    // Prislisten endrer seg omtrent aldri, og seksjonen ligger under folden på
+    // en landingsside. Å hente den på nytt ved hvert fokusbytte ville vært å
+    // pinge API-et uten grunn.
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  return (
+    <section
+      id="prising"
+      className="mx-auto mb-24 max-w-container-max px-margin-mobile py-stack-lg text-center md:px-gutter"
+    >
+      <h2 className="mb-12 font-headline text-headline-lg text-on-background">
+        {t("pricing.title")}
+      </h2>
+
+      <div className="flex flex-col justify-center gap-8 md:flex-row">
+        {pricing.data?.plans.map((plan) => (
+          <div key={plan.id} className="floating-card flex w-full max-w-sm flex-col p-8 text-left">
+            <h3 className="mb-2 font-headline text-headline-md text-on-surface">
+              {t(`pricing.${plan.id}.title`)}
+            </h3>
+            <p className="mb-4 font-display text-display text-on-background">
+              {plan.price === 0
+                ? t("pricing.free_price")
+                : t("pricing.per_month", { price: format.money(plan.price, plan.currency) })}
+            </p>
+            <p className="font-body text-body-md text-on-surface-variant">
+              {t(`pricing.${plan.id}.description`)}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      {/* Feiler kallet, står seksjonen tom framfor å vise en pris vi ikke vet
+          om stemmer. Et gammelt tall på en prisside er verre enn ingen tall. */}
+      {pricing.isError && (
+        <p className="mt-8 font-body text-body-md text-on-surface-variant">
+          {t("pricing.unavailable")}
+        </p>
+      )}
+
+      {pricing.data && (
+        <p className="mt-8 font-body text-body-sm text-on-surface-variant">
+          {t(`pricing.vat_note_${pricing.data.market.id}`)}
+        </p>
+      )}
+    </section>
+  );
+}
 
 function Index() {
   const { user, loading } = useAuth();
@@ -155,9 +232,6 @@ function Index() {
                   </div>
                 )}
                 <div className="relative z-10">
-                  <span className={`material-symbols-outlined icon-lg mb-4 ${f.tone}`}>
-                    {f.icon}
-                  </span>
                   <h3
                     className={`mb-2 font-headline text-on-surface ${
                       f.wide ? "text-headline-lg" : "text-headline-md"
@@ -175,40 +249,7 @@ function Index() {
         </section>
 
         {/* Pricing */}
-        <section
-          id="prising"
-          className="mx-auto mb-24 max-w-container-max px-margin-mobile py-stack-lg text-center md:px-gutter"
-        >
-          <h2 className="mb-12 font-headline text-headline-lg text-on-background">{t("pricing.title")}</h2>
-          <div className="flex flex-col justify-center gap-8 md:flex-row">
-            {/* Hobby */}
-            <div className="floating-card flex w-full max-w-sm flex-col p-8 text-left">
-              <h3 className="mb-2 font-headline text-headline-md text-on-surface">{t("pricing.hobby.title")}</h3>
-              <p className="mb-4 font-display text-display text-on-background">{t("pricing.hobby.price")}</p>
-              <p className="font-body text-body-md text-on-surface-variant">
-                {t("pricing.hobby.description")}
-              </p>
-            </div>
-
-            {/* Standard */}
-            <div className="floating-card flex w-full max-w-sm flex-col p-8 text-left">
-              <h3 className="mb-2 font-headline text-headline-md text-on-surface">{t("pricing.standard.title")}</h3>
-              <p className="mb-4 font-display text-display text-on-background">{t("pricing.standard.price")}</p>
-              <p className="font-body text-body-md text-on-surface-variant">
-                {t("pricing.standard.description")}
-              </p>
-            </div>
-
-            {/* Enterprise */}
-            <div className="floating-card flex w-full max-w-sm flex-col p-8 text-left">
-              <h3 className="mb-2 font-headline text-headline-md text-on-surface">{t("pricing.enterprise.title")}</h3>
-              <p className="mb-4 font-display text-display text-on-background">{t("pricing.enterprise.price")}</p>
-              <p className="font-body text-body-md text-on-surface-variant">
-                {t("pricing.enterprise.description")}
-              </p>
-            </div>
-          </div>
-        </section>
+        <PricingSection />
       </main>
 
       <footer id="sikkerhet" className="shadow-[0_-8px_30px_-24px_oklch(0_0_0/0.9)]">

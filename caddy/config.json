@@ -9,7 +9,26 @@
   "logging": {
     "logs": {
       "default": {
-        "level": "INFO"
+        "level": "INFO",
+        "exclude": ["http.log.access.snoat_access"]
+      },
+      "snoat_access": {
+        "include": ["http.log.access.snoat_access"],
+        "writer": {
+          "output": "net",
+          "address": "backend:3100",
+          "soft_start": true
+        },
+        "encoder": {
+          "format": "filter",
+          "wrap": { "format": "json" },
+          "fields": {
+            "request>headers>Cookie": { "filter": "delete" },
+            "request>headers>Authorization": { "filter": "delete" },
+            "request>headers>Set-Cookie": { "filter": "delete" },
+            "request>headers>Proxy-Authorization": { "filter": "delete" }
+          }
+        }
       }
     }
   },
@@ -44,6 +63,9 @@
       "servers": {
         "snoat": {
           "listen": [":80", ":443"],
+          "logs": {
+            "default_logger_name": "snoat_access"
+          },
           "routes": [
             {
               "@id": "snoat_https_redirect",

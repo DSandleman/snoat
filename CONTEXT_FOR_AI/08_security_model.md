@@ -7,19 +7,26 @@ gjenstår før produksjon.
 ## Tillitsgrenser
 
 ```
-Bruker (nettleser)
-  │  anon-nøkkel + eget JWT
-  ▼
-Supabase ──── RLS: brukeren ser kun egne rader
-  ▲
-  │  service-role-nøkkel (omgår RLS)
-Snoat backend ──── eierskap sjekkes i koden
+Bruker (nettleser)                     Besøkende på en kundeapp
+  │  anon-nøkkel + eget JWT              │  ingen autentisering
+  ▼                                      ▼
+Supabase ─── RLS: kun egne rader       Caddy ─── ser IP fra TCP-koblingen
+  ▲                                      │  access-logg, kun docker-nettet
+  │  service-role-nøkkel (omgår RLS)     ▼
+Snoat backend ─── eierskap i koden ◄──── ingest (port 3100)
   │
   ▼
 Docker-daemon ──── full kontroll over verten
 ```
 
 Jo lenger ned, jo større privilegier. Hvert nivå må derfor ikke lekke oppover.
+
+**Analytikk-ingesten er en skrivevei uten autentisering**, og er sikret ved
+plassering framfor ved tokens: porten bindes til `0.0.0.0` *inne i containeren*,
+men publiseres aldri i `ports:`, så den er kun nåbar fra `snoat`-nettverket.
+Legger du den i `ports:`, kan hvem som helst dikte opp trafikk for et hvilket
+som helst prosjekt. Til gjengjeld kan **IP-en ikke forfalskes**: den leses av
+Caddy fra TCP-koblingen på kanten, ikke fra en header klienten kontrollerer.
 
 ## Implementert
 
@@ -32,6 +39,19 @@ RLS-policyene som avgjør hva som returneres. Frontend filtrerer aldri på
 `loadOwnedProject()` er derfor den eneste kontrollen som står mellom en bruker og
 andres prosjekter. Den svarer 404 og ikke 403, slik at et ID-gjett ikke avslører
 at raden finnes.
+
+**Abonnementet ligger i en tabell brukeren ikke kan skrive til.** RLS i Postgres
+er rad-nivå, ikke kolonne-nivå. `profiles` har en update-policy for eieren, så en
+`plan`-kolonne der ville latt enhver bruker kjøre
+`update profiles set plan = 'business'` mot sin egen rad fra nettleserkonsollen –
+og betalingsmuren ville vært omgått med én linje. `public.subscriptions` har
+derfor **kun en select-policy**, og all skriving skjer fra backend etter en
+verifisert Stripe-signatur. Samme resonnement som `github_installations`.
+
+Regelen generelt: **legg aldri et privilegium som en kolonne på en tabell
+brukeren kan oppdatere.** Skal en slik kolonne likevel dit, må rettigheten
+trekkes tilbake på kolonnenivå med `revoke update (kolonne)` – ikke med en
+RLS-policy, for den kan ikke se forskjell på kolonner.
 
 **Token valideres av GoTrue,** ikke ved lokal signaturverifisering. Det fanger
 også opp tokens som er trukket tilbake.
@@ -124,6 +144,13 @@ bygges avgjøres av `repository.full_name` i payloaden, matchet mot `repo_url` �
 og verten i den må være `github.com`, ellers kunne en push til
 `github.com/eier/app` trigget en deployment av `gitlab.com/eier/app`.
 
+**Stripe-webhooken feiler lukket.** `POST /api/webhooks/stripe` verifiseres mot
+`STRIPE_WEBHOOK_SECRET` over råkroppen, med et body-tak på 1 MB. Er secreten tom,
+avvises **alt** med 503 – i motsetning til GitHub-varianten under, som tas imot
+uverifisert med en advarsel. Forskjellen er tilsiktet: en uverifisert
+GitHub-webhook koster oss et uønsket bygg, mens en uverifisert Stripe-webhook
+lar hvem som helst POST-e seg til Business-planen. Se `12_billing_and_plans.md`.
+
 **Klone-URL-er redigeres før logging.** `lib/redact.ts` fjerner credentials fra
 alt som skrives til byggeloggen. Loggen lagres i `deployments.logs` og leses av
 frontend med anon-nøkkelen, så et installasjonstoken i URL-en ville vært synlig
@@ -131,6 +158,21 @@ for alle som kan se loggen. Både vår egen logging, git sitt stderr og execa si
 feilmeldinger går gjennom den – alle tre gjentar URL-en ordrett.
 
 ## Kjente risikoer
+
+**Personvern i trafikkanalysen er avhengig av at loggen ikke lekker.** Caddys
+`filter`-encoder sletter `Cookie`, `Authorization`, `Set-Cookie` og
+`Proxy-Authorization` før noe forlater proxyen, og loggen går rett over
+docker-nettet uten å innom disk. IP-en finnes i klartekst kun i minnet til
+`handleLine()`, fram til den hashes bort. Endrer du encoder-konfigurasjonen i
+`caddy/config.json`, endrer du samtidig hva som er personopplysninger på avveie
+– feltene skal legges til, aldri fjernes. Aktiverer du fillogging i tillegg,
+skriver du IP-adresser til disk, og da gjelder andre regler for oppbevaring.
+
+**Loggstrømmen dekker også plattformens egne vertsnavn.** Serveren logger alt,
+og ingesten forkaster det som ikke tilhører et prosjekt. Det er enklere og
+sikrere enn per-rute-konfigurasjon, men det betyr at forespørsler mot
+`api.snoat.com` og Supabase også passerer parseren. De havner ingen steder, men
+kravet om at hemmeligheter er filtrert bort gjelder derfor dem også.
 
 **Docker-socketen er montert inn i backend-containeren.** Det gir containeren
 reell root-tilgang på verten – enhver RCE i backend blir til vertskompromittering.

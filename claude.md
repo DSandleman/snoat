@@ -26,6 +26,7 @@ Mappen inneholder:
 - `09_production_deployment.md` — VPS-en, Caddy-rutingen, domeneavledning og deploy-flyten
 - `10_recent_updates_and_roadmap.md` — nylige funksjoner og sammenligning mot Vercel
 - `11_custom_domains_and_dns.md` — DNS-fanen, recordene kunden setter og det som gjenstår
+- `12_billing_and_plans.md` — planer, Stripe-integrasjon og håndheving av grenser
 
 Holder du dokumentasjonen oppdatert etter en endring, er det disse filene som
 skal endres — ikke bare koden.

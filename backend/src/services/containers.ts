@@ -43,6 +43,18 @@ interface ProjectContainer {
   created: number;
 }
 
+/**
+ * Ressurstaket containeren kjøres under.
+ *
+ * Var tidligere `config.SNOAT_APP_MEMORY_MB` lest rett fra `runContainer`. Nå
+ * kommer verdiene fra brukerens plan (`services/plans.ts`), fordi det er
+ * nettopp minne per container gratisplanen selger mindre av.
+ */
+export interface ContainerResources {
+  memoryMb: number;
+  cpus: number;
+}
+
 /** Docker svarer med HTTP-statuskoder på socketen; de skiller «finnes ikke» fra reell feil. */
 function statusCode(error: unknown): number | undefined {
   if (typeof error !== "object" || error === null || !("statusCode" in error)) return undefined;
@@ -151,6 +163,7 @@ export async function runContainer(
   project: Project,
   deploymentId: string,
   image: string,
+  resources: ContainerResources,
   logs: LogStream,
 ): Promise<void> {
   await ensureAppsNetwork();
@@ -170,7 +183,12 @@ export async function runContainer(
     // satt for en build – langt over det containeren faktisk får bruke. Tror V8
     // den har mer heap enn `Memory` tillater, rydder den for lat og Docker
     // OOM-dreper containeren. Vi overstyrer derfor med et tak som passer taket.
-    `NODE_OPTIONS=--max-old-space-size=${Math.floor(config.SNOAT_APP_MEMORY_MB * 0.75)}`,
+    //
+    // Verdien må komme fra *samme* tall som `HostConfig.Memory` under. Regnes de
+    // to fra hver sin kilde – for eksempel fordi planen hever den ene og
+    // konfigurasjonen den andre – er OOM-drapet tilbake, og da i en form som
+    // bare rammer kunder på én plan.
+    `NODE_OPTIONS=--max-old-space-size=${Math.floor(resources.memoryMb * 0.75)}`,
     // Brukerens egne variabler kommer sist og vinner: Docker lar den siste
     // forekomsten av en nøkkel gjelde.
     ...Object.entries(project.env_vars ?? {}).map(([key, value]) => `${key}=${value}`),
@@ -187,9 +205,10 @@ export async function runContainer(
     },
     ExposedPorts: { [`${config.SNOAT_APP_PORT}/tcp`]: {} },
     HostConfig: {
-      // Ressurstak – ett prosjekt skal ikke kunne spise opp verten.
-      Memory: config.SNOAT_APP_MEMORY_MB * 1024 * 1024,
-      NanoCpus: Math.round(config.SNOAT_APP_CPUS * 1e9),
+      // Ressurstak – ett prosjekt skal ikke kunne spise opp verten. Hvor høyt
+      // taket er, avgjøres av kundens plan (`services/plans.ts`).
+      Memory: resources.memoryMb * 1024 * 1024,
+      NanoCpus: Math.round(resources.cpus * 1e9),
       RestartPolicy: { Name: "unless-stopped" },
       NetworkMode: config.SNOAT_APPS_NETWORK,
     },
@@ -212,7 +231,7 @@ export async function runContainer(
     throw new DeployError("run", `Containeren startet ikke: ${String(error)}`);
   }
 
-  logs.write(`Container startet: ${name} (${config.SNOAT_APP_MEMORY_MB} MB, ${config.SNOAT_APP_CPUS} CPU)`);
+  logs.write(`Container startet: ${name} (${resources.memoryMb} MB, ${resources.cpus} CPU)`);
 }
 
 /**
@@ -352,6 +371,29 @@ export async function removeContainer(project: Project): Promise<void> {
 export async function currentContainerName(project: Project): Promise<string | null> {
   const running = (await listProjectContainers(project)).filter((container) => container.running);
   return running[0]?.name ?? null;
+}
+
+/**
+ * Prosjektene som har minst én kjørende container akkurat nå, som et sett av
+ * prosjekt-ID-er.
+ *
+ * Grunnlaget for grensen på antall samtidige apper per plan. Vi spør Docker én
+ * gang for alle Snoat-containere i stedet for å inspisere hvert prosjekt for
+ * seg: en bruker med tjue prosjekter ville ellers gitt tjue kall per deployment.
+ *
+ * Uten `all: true` returnerer Docker kun det som kjører, som er nøyaktig
+ * spørsmålet – et stoppet prosjekt koster ikke minne og skal ikke telles.
+ */
+export async function runningProjectIds(): Promise<Set<string>> {
+  const infos = await docker.listContainers({ filters: { label: [`${LABEL_MANAGED}=true`] } });
+
+  const ids = new Set<string>();
+  for (const info of infos) {
+    const projectId = info.Labels?.[LABEL_PROJECT];
+    if (projectId) ids.add(projectId);
+  }
+
+  return ids;
 }
 
 /** Antall kjørende containere for prosjektet. Mer enn én betyr en avbrutt deployment. */

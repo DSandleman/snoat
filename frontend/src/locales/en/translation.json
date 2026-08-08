@@ -8,8 +8,8 @@
     "register": "Sign up"
   },
   "hero": {
-    "title": "Lightning-fast infrastructure for Norwegian Web Apps",
-    "description": "Deploy your website in one click — 100% GDPR-compliant on Norwegian infrastructure.",
+    "title": "Lightning-fast infrastructure for modern Web Apps",
+    "description": "Deploy your website in one click. 100% GDPR-compliant cloud platform built for speed and privacy.",
     "cta_go_to_projects": "Go to your projects",
     "cta_register": "Sign up",
     "cta_security": "Read about security"
@@ -17,46 +17,43 @@
   "features": {
     "data_sovereignty": {
       "title": "Data Sovereignty",
-      "body": "All data in Norway. 100% GDPR-compliant. Safe, secure and local."
+      "body": "All data stays in Europe. 100% GDPR-compliant. The perfect European Vercel alternative for privacy-focused teams."
     },
     "performance": {
       "title": "Lightning Fast",
-      "body": "Local servers provide lower latency."
+      "body": "Optimized edge servers and aggressive caching provide unbeatable global latency."
     },
     "security": {
       "title": "Security First",
-      "body": "DDoS protection and automatic analysis."
+      "body": "Enterprise-grade DDoS protection and automated vulnerability analysis built-in."
     },
     "dx": {
       "title": "Developer Experience",
-      "body": "GitHub integration and Next.js support."
+      "body": "Seamless GitHub integration, instant previews, and out-of-the-box Next.js support."
     },
     "backend": {
-      "title": "Secure Backend",
-      "body": "Integrated self-hosted Supabase in Norway."
+      "title": "Secure Infrastructure",
+      "body": "Isolated and encrypted container architecture built for modern cybersecurity needs."
     }
   },
   "pricing": {
     "title": "Simple Pricing",
-    "hobby": {
-      "title": "Hobby",
-      "price": "Free",
-      "description": "For test projects and portfolios.",
-      "cta": "Start for free"
+    "free_price": "Free",
+    "per_month": "{{price}} / month",
+    "unavailable": "We can't load the price list right now. Please try again shortly.",
+    "vat_note_no": "All prices exclude VAT. Frostbyte Group AS invoices with Norwegian VAT.",
+    "vat_note_eu": "All prices exclude VAT. Tax is calculated at checkout based on your country. Businesses with a valid VAT number are invoiced without VAT.",
+    "free": {
+      "title": "Free",
+      "description": "For test projects, portfolios and static sites."
     },
-    "standard": {
-      "badge": "Most popular",
-      "title": "Standard",
-      "price": "€19 / month",
-      "description": "For professionals and growing projects.",
-      "cta": "Get started"
+    "pro": {
+      "title": "Pro",
+      "description": "For professionals and growing projects."
     },
-    "enterprise": {
-      "badge": "For larger businesses",
-      "title": "Enterprise",
-      "price": "Contact us",
-      "description": "Scalable performance, custom SLAs and dedicated support.",
-      "cta": "Contact sales"
+    "business": {
+      "title": "Business",
+      "description": "Maximum performance, priority build queue and invoicing."
     }
   },
   "footer": {
@@ -136,7 +133,9 @@
       "no_repos": "No matches found.",
       "grant_access": "Give Snoat access to more repositories",
       "private": "Private"
-    }
+    },
+    "start": "Start",
+    "stopped": "Stopped"
   },
   "dns": {
     "default_address": "Default Snoat address:",
@@ -207,6 +206,7 @@
   "project": {
     "tab_deployments": "Deployments",
     "tab_terminal": "Terminal",
+    "tab_analytics": "Analytics",
     "tab_dns": "DNS",
     "tab_env": "Environment Variables",
     "tab_settings": "Settings",
@@ -237,7 +237,27 @@
     "env_dropzone": "Drag and drop your .env file here, or click to browse",
     "env_paste_placeholder": "API_KEY=secret_key_123\nDATABASE_URL=postgresql://...",
     "env_import_submit": "Import {{count}} variables",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "logout": "Log out",
+    "visit": "Visit",
+    "no_logs_available": "No logs available for this project yet.",
+    "env_vars_found": "{{count}} variables found",
+    "env_vars_saved": "Environment variables were saved.",
+    "env_vars_save_error": "Could not save environment variables",
+    "env_vars_imported": "{{count}} variables imported.",
+    "saving": "Saving…",
+    "settings_saved": "Settings were saved.",
+    "settings_save_error": "Could not save settings",
+    "delete_project_error": "Could not delete project",
+    "project_settings": "Project Settings",
+    "advanced_build_settings": "Advanced Build Settings",
+    "static_output_dir": "Static Output Directory",
+    "static_output_dir_placeholder": "e.g. dist — leave blank to run as server",
+    "static_output_dir_help": "If the project only produces static files, Caddy serves them directly from disk — no container runs, and the site costs nothing when nobody visits. Vite and Astro build to <code class=\"font-mono\">dist</code>, Next.js with <code class=\"font-mono\">output: 'export'</code> to <code class=\"font-mono\">out</code>. Leave empty for apps requiring a server (Next.js, Express, APIs).",
+    "spa_fallback": "Client Routing (SPA)",
+    "spa_fallback_help": "Serves <code class=\"font-mono\">index.html</code> for paths that don't exist as files, allowing deep links to work on direct page load. Enable for React Router or TanStack Router. Leave disabled for Astro, Hugo and Eleventy — they have their own 404 pages.",
+    "delete_project_warning": "Deleting the project will permanently remove all deployments and settings.",
+    "start_project": "Start again"
   },
   "forgot": {
     "title": "Forgot password",
@@ -255,5 +275,103 @@
     "btn_request_new": "Request a new link",
     "error_weak_password": "That password is too weak. Use at least 8 characters with a mix of letters and numbers.",
     "error_same_password": "The new password must differ from the old one."
+  },
+  "billing": {
+    "back": "Back to projects",
+    "title": "Subscription",
+    "subtitle": "Your plan, your usage and your billing details.",
+    "loading": "Loading subscription …",
+    "plans": "Plans",
+    "current_plan": "Current plan",
+    "current": "Current",
+    "current_hint": "This is the plan you are on.",
+    "plan_free": "Free",
+    "plan_pro": "Pro",
+    "plan_business": "Business",
+    "per_month": "/ mo excl. VAT",
+    "free_price": "Free",
+    "incl_vat": "{{price}} incl. VAT",
+    "upgrade": "Upgrade",
+    "opening": "Opening …",
+    "manage": "Manage subscription",
+    "not_purchasable": "This plan cannot be purchased yet.",
+    "downgrade_hint": "Cancel in the customer portal to return to Free.",
+    "stripe_missing": "Billing is not set up on this installation yet. All accounts run on the Free limits.",
+    "checkout_ok": "Thank you! We received your payment. The plan updates as soon as Stripe confirms it — usually within seconds.",
+    "checkout_canceled": "Checkout was cancelled. You are still on your previous plan.",
+    "usage_apps": "Running apps",
+    "usage_apps_hint": "Dynamic apps running right now. Static sites do not count.",
+    "usage_build_minutes": "Build minutes",
+    "usage_build_minutes_hint": "Used this calendar month. Resets on the 1st.",
+    "usage_static_one": "You have 1 static site. Static sites are unlimited on every plan — they run no container.",
+    "usage_static_other": "You have {{count}} static sites. They are unlimited on every plan — they run no container.",
+    "feature_apps_one": "1 app at a time",
+    "feature_apps_other": "{{count}} apps at a time",
+    "feature_memory": "{{mb}} MB RAM and {{cpus}} vCPU per app",
+    "feature_build_minutes": "{{minutes}} build minutes per month",
+    "feature_static": "Unlimited static sites",
+    "feature_priority": "Priority build queue",
+    "feature_ehf": "EHF invoicing on request",
+    "payment_failed_title": "Payment failed",
+    "grace_body": "We could not charge the card for {{plan}}. Everything keeps running until {{date}} while we retry. Update your payment method before then and you will not notice a thing.",
+    "downgraded_body": "We could not charge the card for {{plan}}, and the grace period has ended. The account now runs on the Free limits. Your apps and data are untouched — update your payment method and one new deployment brings it all back.",
+    "fix_payment": "Update payment method",
+    "renews_on": "Renews {{date}}",
+    "cancels_on": "Active until {{date}}, then Free",
+    "invoiced": "Invoiced by EHF outside Stripe.",
+    "vat_at_checkout": "VAT is calculated at checkout based on your country.",
+    "vat_note_no": "All prices are in Norwegian kroner and exclude VAT. Frostbyte Group AS invoices with Norwegian VAT.",
+    "vat_note_eu": "All prices are in euro and exclude VAT. Tax is calculated at checkout based on your country — businesses with a valid VAT number are invoiced without VAT.",
+    "currency_locked": "Your subscription is billed in {{currency}}. The currency was set when you bought the plan and cannot be changed, not even by switching language.",
+    "invoice_ehf_title": "EHF invoicing for businesses",
+    "invoice_ehf_body": "Norwegian businesses and public sector can get the Business plan on an EHF invoice using an organisation number instead of a card. Contact us at post@frostbytes.no and we'll set it up manually.",
+    "invoice_email_title": "Invoicing for businesses",
+    "invoice_email_body": "Businesses can get the Business plan on invoice instead of card. Enter your VAT number at checkout and you'll be invoiced without VAT. Contact us at post@frostbytes.no."
+  },
+  "project_plan": {
+    "section_label": "SUBSCRIPTION & PERFORMANCE",
+    "current_plan_title": "Plan for this project",
+    "active": "Active",
+    "change": "Change",
+    "upgrade": "Upgrade",
+    "loading": "Loading...",
+    "per_month": "/ mo",
+    "checkout_success": "Thank you! Your payment was registered. The plan updates as soon as Stripe confirms it.",
+    "checkout_canceled": "Payment was cancelled. The project remains on the {{plan}} plan.",
+    "free_desc": "For hobby projects and personal websites (non-commercial use).",
+    "free_f1": "Standard build queue",
+    "free_f2": "Snoat subdomain (*.snoat.com)",
+    "free_f3": "Included visitor analytics",
+    "free_f4": "Non-commercial use only",
+    "pro_desc": "For commercial projects, companies and professional websites.",
+    "pro_f1": "Custom domain (yourdomain.com)",
+    "pro_f2": "Priority build queue & faster deploys",
+    "pro_f3": "Higher capacity for production traffic",
+    "pro_f4": "Included analytics",
+    "business_desc": "For especially large projects with over ten thousand monthly visitors.",
+    "business_f1": "Custom capacity & dedicated resources",
+    "business_f2": "Priority support & direct follow-up",
+    "business_f3": "Invoiced / EHF with company registration",
+    "business_f4": "SLA and guaranteed uptime",
+    "contact_price": "Custom",
+    "contact_us": "Contact us",
+    "gated_dns_title": "Custom domain requires Pro or Business plan",
+    "gated_dns_desc": "Upgrade this project to connect your own custom domain (e.g. yourdomain.com) and get full analytics.",
+    "free_price": "Free"
+  },
+  "errors": {
+    "unknown": "Something went wrong. Please try again.",
+    "auth": {
+      "signed_out": "You are not signed in."
+    },
+    "plan": {
+      "build_minutes_exhausted": "You have used {{used}} of {{limit}} build minutes this month. The quota resets on the 1st — upgrade your plan to build more now.",
+      "apps_limit_reached": "Your plan allows {{limit}} apps at a time, and you have {{running}} running. Upgrade your plan, or stop an app you're not using.",
+      "apps_limit_reached_downgraded": "Your payment failed, so the account is running on the Free limits: {{limit}} apps at a time, and you have {{running}} running. Update your payment method and everything comes back."
+    },
+    "deploy": {
+      "already_building": "This project is already building. Wait for the running build to finish.",
+      "building_now": "This project is building right now. Wait for the build to finish."
+    }
   }
 }

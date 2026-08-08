@@ -7,7 +7,15 @@ import * as containers from "./containers.js";
 import { cleanupWorkspace, cloneRepository } from "./git.js";
 import { LogStream } from "./log-stream.js";
 import { buildImage } from "./nixpacks.js";
+import {
+  assertCanDeploy,
+  entitlementFor,
+  planName,
+  resourcesFor,
+  type Entitlement,
+} from "./plans.js";
 import { pruneOldSites, publishStaticSite, removeProjectSites, siteDirFor } from "./static-site.js";
+import { invalidateHostMap } from "./analytics-ingest.js";
 import { rm, stat } from "node:fs/promises";
 
 /**
@@ -36,9 +44,33 @@ interface QueueEntry {
   project: Project;
   deployment: Deployment;
   logs: LogStream;
+  /** Planen som gjaldt da bygget ble lagt i kø: prioritet og ressurstak. */
+  entitlement: Entitlement;
 }
 
 const waiting: QueueEntry[] = [];
+
+/**
+ * Legger bygget i køen på riktig plass.
+ *
+ * Køen er prioritert, ikke ren FIFO: Pro og Business går foran Free. Med
+ * `SNOAT_MAX_CONCURRENT_BUILDS` = 1 er dette en reell forskjell – en Free-bruker
+ * som starter et tungt bygg skal ikke kunne holde produksjonen til en betalende
+ * kunde ventende.
+ *
+ * Innenfor samme prioritet gjelder ankomstrekkefølgen: vi setter oss inn foran
+ * den *første* som har lavere prioritet, altså bakerst blant våre likemenn.
+ * Sammenligningen må derfor være streng ulikhet – med `<=` ville et nytt bygg
+ * gått foran likemennene sine, og køen blitt LIFO for alle på samme plan.
+ */
+function enqueue(entry: QueueEntry): void {
+  const index = waiting.findIndex(
+    (queued) => queued.entitlement.limits.queuePriority < entry.entitlement.limits.queuePriority,
+  );
+
+  if (index === -1) waiting.push(entry);
+  else waiting.splice(index, 0, entry);
+}
 
 export function isDeploying(projectId: string): boolean {
   return inFlight.has(projectId) || waiting.some((entry) => entry.project.id === projectId);
@@ -63,7 +95,7 @@ function pump(): void {
     // ellers blitt en unhandled rejection – og Node avslutter prosessen på dem.
     // Nå som webhooks starter builds uten at et menneske ser på, må en enkelt
     // rar deployment ikke kunne ta ned hele backend.
-    void runPipeline(next.project, next.deployment, next.logs)
+    void runPipeline(next.project, next.deployment, next.entitlement, next.logs)
       .catch((error) => {
         logger.error(
           { project: next.project.name, deployment: next.deployment.id, err: error },
@@ -128,7 +160,7 @@ export async function failOrphanedDeployments(): Promise<number> {
 async function setStatus(
   deploymentId: string,
   status: DeploymentStatus,
-  fields: Partial<Pick<Deployment, "url" | "commit_hash">> = {},
+  fields: Partial<Pick<Deployment, "url" | "commit_hash" | "duration_ms">> = {},
 ): Promise<void> {
   const { error } = await supabase
     .from("deployments")
@@ -149,7 +181,50 @@ async function setStatus(
  */
 export async function startDeployment(project: Project): Promise<Deployment> {
   if (isDeploying(project.id)) {
-    throw new DeployError("queue", "Prosjektet bygges allerede. Vent til den kjørende buildet er ferdig.");
+    throw new DeployError(
+      "queue",
+      "Prosjektet bygges allerede. Vent til den kjørende buildet er ferdig.",
+      { code: "deploy.already_building" },
+    );
+  }
+
+  /**
+   * Planen håndheves her, og ikke i API-laget.
+   *
+   * `startDeployment` er den eneste veien inn til pipelinen – både det manuelle
+   * endepunktet og GitHub-webhooken går gjennom den. En sjekk i `routes/api.ts`
+   * ville ikke dekket auto-deploy ved push, og det er nettopp den som kan starte
+   * bygg i det uendelige uten at noen sitter og ser på.
+   *
+   * Merk at prosjektet *ikke* opprettes gjennom backend i det hele tatt –
+   * frontend inserter direkte i Supabase med RLS. Det er derfor grensen står på
+   * deployment og ikke på opprettelse. Det er også riktig sted økonomisk: et
+   * prosjekt uten container koster ingenting.
+   */
+  const entitlement = await entitlementFor(project.user_id);
+  await assertCanDeploy(project, entitlement);
+
+  // Trafikkanalysen trenger ingen registrering her: statistikken hentes ut av
+  // Caddy-loggen, og vertsnavnet er alt ingesten trenger for å vite hvilket
+  // prosjekt et treff gjelder. Det eneste som må skje, er at ingesten lærer om
+  // et helt nytt vertsnavn – og det gjør den når ruten opprettes lenger nede.
+
+  // Prosjektet er ikke lenger stoppet – brukeren har nettopp bedt om at det
+  // kjører igjen. Nullstilles her og ikke ved vellykket build, slik at
+  // dashboardet slutter å si «Stoppet» med én gang byggingen er i gang.
+  // Feiler bygget, forteller deployment-statusen resten av historien.
+  if (project.stopped_at) {
+    const { error: clearError } = await supabase
+      .from("projects")
+      .update({ stopped_at: null })
+      .eq("id", project.id);
+
+    if (clearError) {
+      logger.warn(
+        { project: project.name, err: clearError },
+        "Kunne ikke fjerne stoppet-markeringen",
+      );
+    }
   }
 
   const { data, error } = await supabase
@@ -172,12 +247,26 @@ export async function startDeployment(project: Project): Promise<Deployment> {
   logs.write(`Snoat deployer ${project.name}`);
   logs.write(`Repository: ${project.repo_url}`);
 
-  const ahead = inFlight.size + waiting.length;
-  waiting.push({ project, deployment, logs });
+  enqueue({ project, deployment, logs, entitlement });
+
+  // Hvor mange som faktisk står foran *dette* bygget, ikke hvor mange som er i
+  // køen totalt: med prioritert kø kan et Pro-bygg ha hoppet forbi flere.
+  const ahead = inFlight.size + waiting.findIndex((entry) => entry.deployment.id === deployment.id);
 
   if (ahead >= config.SNOAT_MAX_CONCURRENT_BUILDS) {
     logs.write(
       `\nVenter på ledig byggekapasitet – ${ahead} ${ahead === 1 ? "build" : "builds"} foran i køen.`,
+    );
+    if (entitlement.limits.queuePriority === 0) {
+      logs.write(`Bygg på betalte planer går foran i køen.`);
+    }
+    await logs.flush();
+  }
+
+  if (entitlement.downgraded) {
+    logs.write(
+      `\n⚠️  Betalingen for ${planName(entitlement.billedPlan)} har feilet, og nådefristen er ute. ` +
+        `Bygget kjører på gratisgrensene (${entitlement.limits.memoryMb} MB) til betalingen er i orden.`,
     );
     await logs.flush();
   }
@@ -260,7 +349,7 @@ async function rollback(
 
     if (current !== previousUpstream) {
       try {
-        await caddy.upsertAppRoute(project.name, previousUpstream);
+        await caddy.upsertAppRoute(project.name, project.custom_domain, previousUpstream);
         logs.write(`Ruten peker igjen på ${previousUpstream}.`);
       } catch (error) {
         logs.write(`Advarsel: kunne ikke peke ruten tilbake til ${previousUpstream}.`);
@@ -295,7 +384,7 @@ async function deployStatic(
 
   try {
     logs.step("Flytter trafikken over");
-    await caddy.upsertStaticRoute(project.name, root, project.static_spa_fallback);
+    await caddy.upsertStaticRoute(project.name, project.custom_domain, root, project.static_spa_fallback);
 
     const active = await caddy.appRouteRoot(project.name);
     if (active !== root) {
@@ -308,7 +397,7 @@ async function deployStatic(
     logs.write("Filene serveres direkte av Caddy – ingen container kjører for dette prosjektet.");
   } catch (error) {
     if (previousRoute) {
-      await caddy.restoreAppRoute(project.name, previousRoute).catch((restoreError: unknown) => {
+      await caddy.restoreAppRoute(project.name, project.custom_domain, previousRoute).catch((restoreError: unknown) => {
         logger.error({ project: project.name, err: restoreError }, "Kunne ikke rulle tilbake ruten");
       });
     }
@@ -340,7 +429,12 @@ async function deployStatic(
  * og trafikken flyttes over først når den er bekreftet oppe. Derfor er det ingen
  * nedetid, og en feilet deployment lar den kjørende versjonen stå.
  */
-async function runPipeline(project: Project, deployment: Deployment, logs: LogStream): Promise<void> {
+async function runPipeline(
+  project: Project,
+  deployment: Deployment,
+  entitlement: Entitlement,
+  logs: LogStream,
+): Promise<void> {
   const url = caddy.appUrl(project.name);
   const started = Date.now();
 
@@ -377,13 +471,22 @@ async function runPipeline(project: Project, deployment: Deployment, logs: LogSt
 
       logs.write(`Live på ${url}`);
 
-      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+      const elapsed = Date.now() - started;
+      const seconds = (elapsed / 1000).toFixed(1);
       logs.write(`\nFerdig på ${seconds}s.`);
       logs.write(`\n====================================================================`);
       logs.write(`[SNOAT] ✓ BYGGING FULLFØRT (${seconds}s) — Prossessen er avsluttet.`);
       logs.write(`====================================================================\n`);
       await logs.flush();
-      await setStatus(deployment.id, "success", { url, commit_hash: commitHash });
+      await setStatus(deployment.id, "success", {
+        url,
+        commit_hash: commitHash,
+        duration_ms: elapsed,
+      });
+
+      // Ruten er live. Uten dette ville analytikk-ingesten forkastet treffene
+      // mot et helt nytt vertsnavn fram til den periodiske oppfriskningen kom.
+      invalidateHostMap();
 
       logger.info({ project: project.name, deployment: deployment.id, seconds }, "Statisk deployment fullført");
       return;
@@ -397,11 +500,11 @@ async function runPipeline(project: Project, deployment: Deployment, logs: LogSt
     const upstream = containers.upstreamFor(containerName);
 
     try {
-      await containers.runContainer(project, deployment.id, image, logs);
+      await containers.runContainer(project, deployment.id, image, resourcesFor(entitlement, project), logs);
       await containers.assertStillRunning(containerName, logs);
 
       logs.step("Flytter trafikken over");
-      await caddy.upsertAppRoute(project.name, upstream);
+      await caddy.upsertAppRoute(project.name, project.custom_domain, upstream);
 
       // Caddy bytter ruten i minnet – vi leser den tilbake før vi river ned den
       // forrige containeren, slik at vi aldri fjerner det som faktisk svarer.
@@ -425,20 +528,30 @@ async function runPipeline(project: Project, deployment: Deployment, logs: LogSt
 
     logs.write(`Live på ${url}`);
 
-    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    const elapsed = Date.now() - started;
+    const seconds = (elapsed / 1000).toFixed(1);
     logs.write(`\nFerdig på ${seconds}s.`);
     logs.write(`\n====================================================================`);
     logs.write(`[SNOAT] ✓ BYGGING FULLFØRT (${seconds}s) — Prossessen er avsluttet.`);
     logs.write(`====================================================================\n`);
     await logs.flush();
-    await setStatus(deployment.id, "success", { url, commit_hash: commitHash });
+    await setStatus(deployment.id, "success", {
+      url,
+      commit_hash: commitHash,
+      duration_ms: elapsed,
+    });
+
+    // Se kommentaren i den statiske grenen: gjør vertsnavnet kjent for ingesten
+    // med én gang, i stedet for å miste de første treffene.
+    invalidateHostMap();
 
     logger.info({ project: project.name, deployment: deployment.id, seconds }, "Deployment fullført");
   } catch (error) {
     const step = error instanceof DeployError ? error.step : "ukjent";
     const message = error instanceof Error ? error.message : String(error);
 
-    const seconds = ((Date.now() - started) / 1000).toFixed(1);
+    const elapsed = Date.now() - started;
+    const seconds = (elapsed / 1000).toFixed(1);
     logs.step(`Deployment feilet (${step}) etter ${seconds}s`);
     logs.write(message);
     logs.write(`\nFeilet etter ${seconds}s.`);
@@ -446,7 +559,10 @@ async function runPipeline(project: Project, deployment: Deployment, logs: LogSt
     logs.write(`[SNOAT] ✗ BYGGING FEILET (${step} etter ${seconds}s) — Prossessen er avsluttet.`);
     logs.write(`====================================================================\n`);
     await logs.flush();
-    await setStatus(deployment.id, "failed");
+    // Varigheten lagres også når bygget feiler: minuttene gikk med uansett, og
+    // uten dem ville et repo som feiler etter 25 minutter vært gratis å kjøre om
+    // og om igjen.
+    await setStatus(deployment.id, "failed", { duration_ms: elapsed });
 
     logger.error({ project: project.name, deployment: deployment.id, step, seconds, err: error }, "Deployment feilet");
   } finally {
@@ -490,6 +606,16 @@ export async function reconcileRoutes(): Promise<{ restored: number; skipped: nu
       continue;
     }
 
+    // Et prosjekt brukeren har stoppet skal ikke komme tilbake fordi backend
+    // startet på nytt. For containere er dette allerede sant – de er fjernet, så
+    // det finnes ingenting å rute til – men en *statisk* side ligger fortsatt på
+    // disk, og uten denne sjekken ville ruten blitt gjenopprettet ved neste
+    // oppstart.
+    if (project.stopped_at) {
+      skipped += 1;
+      continue;
+    }
+
     // Statiske prosjekter har ingen container å slå opp – ruten skal peke på
     // katalogen den siste vellykkede deploymenten la igjen. Finnes ikke
     // katalogen (volumet er nytt eller ryddet), er det ingenting å gjenopprette,
@@ -506,7 +632,7 @@ export async function reconcileRoutes(): Promise<{ restored: number; skipped: nu
         continue;
       }
 
-      await caddy.upsertStaticRoute(project.name, root, project.static_spa_fallback);
+      await caddy.upsertStaticRoute(project.name, project.custom_domain, root, project.static_spa_fallback);
       restored += 1;
       continue;
     }
@@ -524,7 +650,7 @@ export async function reconcileRoutes(): Promise<{ restored: number; skipped: nu
       continue;
     }
 
-    await caddy.upsertAppRoute(project.name, containers.upstreamFor(name));
+    await caddy.upsertAppRoute(project.name, project.custom_domain, containers.upstreamFor(name));
     restored += 1;
 
     // Rullerende utrulling som ble avbrutt midtveis (backend drept mellom
@@ -543,10 +669,31 @@ export async function reconcileRoutes(): Promise<{ restored: number; skipped: nu
   return { restored, skipped };
 }
 
-/** Stopper applikasjonen og fjerner ruten. Brukes når et prosjekt slettes. */
-export async function teardownProject(project: Project): Promise<void> {
+/**
+ * Stopper applikasjonen og fjerner ruten.
+ *
+ * `markStopped` skiller de to grunnene til å kalle denne. Et stopp brukeren ba
+ * om skal være **synlig** i dashboardet, mens en teardown på vei til sletting
+ * ikke skal skrive til en rad som er i ferd med å forsvinne.
+ */
+export async function teardownProject(project: Project, markStopped = true): Promise<void> {
   await caddy.removeAppRoute(project.name);
   await containers.removeContainer(project);
+
+  // Skrives etter at containeren faktisk er borte, ikke før: feiler
+  // opprydningen, skal ikke databasen påstå at appen er stoppet.
+  if (markStopped) {
+    const { error } = await supabase
+      .from("projects")
+      .update({ stopped_at: new Date().toISOString() })
+      .eq("id", project.id);
+
+    if (error) {
+      // Appen *er* nede – dette handler bare om at dashboardet ikke får vite
+      // det. Vi kaster ikke, for da ville et vellykket stopp sett ut som en feil.
+      logger.error({ project: project.name, err: error }, "Kunne ikke markere prosjektet som stoppet");
+    }
+  }
 
   // Statiske filer ligger på et delt volum og forsvinner ikke med containeren.
   // Kjøres også for prosjekter som aldri var statiske – da er det en no-op.

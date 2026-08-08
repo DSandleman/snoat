@@ -39,16 +39,15 @@ tlsPermission.get("/tls-ask", async (c) => {
 
   const slug = slugFromHostname(domain);
 
-  if (slug === null) {
-    logger.info({ domain }, "TLS avvist: ikke et Snoat-appdomene");
-    return c.text("ukjent domene", 404);
+  let query = supabase.from("projects").select("id");
+  
+  if (slug) {
+    query = query.eq("name", slug);
+  } else {
+    query = query.eq("custom_domain", domain);
   }
 
-  const { data, error } = await supabase
-    .from("projects")
-    .select("id")
-    .eq("name", slug)
-    .maybeSingle();
+  const { data, error } = await query.maybeSingle();
 
   if (error) {
     // Fail closed. Caddy prøver igjen ved neste handshake.

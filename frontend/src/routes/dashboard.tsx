@@ -169,6 +169,45 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
+function ProjectFavicon({ url, repoUrl }: { url: string | null; repoUrl: string }) {
+  const [imgSrc, setImgSrc] = useState<string | null>(() => {
+    if (url) {
+      return `${url.replace(/\/$/, "")}/favicon.ico`;
+    }
+    const owner = repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "").split("/")[0];
+    return owner ? `https://github.com/${owner}.png?size=64` : null;
+  });
+  const [failed, setFailed] = useState(false);
+
+  const handleNextFallback = () => {
+    if (url && imgSrc?.includes("/favicon.ico")) {
+      const owner = repoUrl.replace(/^https?:\/\/(www\.)?github\.com\//, "").split("/")[0];
+      if (owner) {
+        setImgSrc(`https://github.com/${owner}.png?size=64`);
+        return;
+      }
+    }
+    setFailed(true);
+  };
+
+  if (!imgSrc || failed) {
+    return (
+      <span className="material-symbols-outlined icon-sm text-on-surface-variant shrink-0">
+        public
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={imgSrc}
+      alt=""
+      className="h-5 w-5 rounded-sm object-contain shrink-0"
+      onError={handleNextFallback}
+    />
+  );
+}
+
 function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -181,6 +220,13 @@ function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
     .replace(/\.git$/, "");
 
   const isBuilding = deployment?.status === "queued" || deployment?.status === "building";
+  /** Appen er slått av. Statusen ligger på prosjektet, ikke på deploymenten. */
+  const isStopped = Boolean(project.stopped_at);
+
+  // En stoppet app har ingen adresse som svarer. Lenken skjules derfor, i stedet
+  // for å sende brukeren til en 502.
+  const displayUrl = deployment?.url && !isStopped ? deployment.url.replace(/^https?:\/\//, "") : null;
+  const activeUrl = deployment?.url && !isStopped ? deployment.url : null;
 
   const deploy = useMutation({
     mutationFn: () => deployProject(project.id),
@@ -197,45 +243,23 @@ function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
   });
 
   return (
-    <article className="floating-card flex flex-col gap-5 p-6">
-      <div className="flex items-start justify-between gap-3">
-        <Link
-          to="/projects/$projectId"
-          params={{ projectId: project.id }}
-          className="font-headline text-headline-md text-on-surface hover:text-primary transition-colors"
-        >
-          {project.name}
-        </Link>
-        <DeploymentStatusBadge status={deployment?.status ?? null} />
-      </div>
-
-      <div className="flex flex-col gap-2">
-        <a
-          href={project.repo_url}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-2 font-body text-body-md text-on-surface-variant transition-colors hover:text-on-surface"
-        >
-          <span className="material-symbols-outlined icon-sm">code</span>
-          {repoLabel}
-        </a>
-
-        {deployment?.url ? (
-          <a
-            href={deployment.url}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-2 font-body text-body-md text-primary transition-opacity hover:opacity-80"
-          >
-            <span className="material-symbols-outlined icon-sm">link</span>
-            {deployment.url.replace(/^https?:\/\//, "")}
-          </a>
-        ) : (
-          <span className="inline-flex items-center gap-2 font-body text-body-md text-on-surface-variant/70">
-            <span className="material-symbols-outlined icon-sm">link_off</span>
-            {t("dashboard.no_url")}
-          </span>
-        )}
+    <article
+      onClick={() => {
+        void navigate({
+          to: "/projects/$projectId",
+          params: { projectId: project.id },
+        });
+      }}
+      className="floating-card flex cursor-pointer flex-col gap-4 p-6 transition-all"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <ProjectFavicon url={activeUrl} repoUrl={project.repo_url} />
+          <h3 className="font-headline text-headline-md text-on-surface truncate">
+            {project.name}
+          </h3>
+        </div>
+        <DeploymentStatusBadge status={deployment?.status ?? null} stopped={isStopped} />
       </div>
 
       {error && (
@@ -244,29 +268,60 @@ function ProjectCard({ project }: { project: ProjectWithLatestDeployment }) {
         </p>
       )}
 
-      <div className="mt-auto flex items-center justify-between gap-3 pt-2">
-        <Link
-          to="/projects/$projectId"
-          params={{ projectId: project.id }}
-          className="inline-flex items-center gap-1 font-label text-label-md text-on-surface-variant transition-colors hover:text-on-surface"
-        >
-          {t("dashboard.view_details")}
-          <span className="material-symbols-outlined icon-sm">chevron_right</span>
-        </Link>
+      <div className="mt-auto flex items-center justify-between gap-3 pt-3">
+        {deployment?.url ? (
+          <a
+            href={deployment.url}
+            target="_blank"
+            rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1.5 rounded-full bg-surface-container-high/60 hover:bg-surface-container-high px-3.5 py-1.5 font-body text-body-sm font-medium text-primary hover:text-primary transition-all border border-primary/20 hover:border-primary/40"
+          >
+            <span className="material-symbols-outlined icon-sm">link</span>
+            <span className="truncate max-w-[150px] sm:max-w-[180px]">{displayUrl}</span>
+          </a>
+        ) : (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-container-high/30 px-3.5 py-1.5 font-body text-body-sm text-on-surface-variant/60">
+            <span className="material-symbols-outlined icon-sm">link_off</span>
+            {t("dashboard.no_url")}
+          </span>
+        )}
 
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            deploy.mutate();
-          }}
-          disabled={deploy.isPending || isBuilding}
-          className="primary-btn px-5 py-2.5 font-label text-label-md disabled:opacity-50"
-        >
-          {isBuilding ? t("dashboard.deploying") : deployment ? t("dashboard.redeploy") : t("dashboard.deploy")}
-        </button>
+        <div className="flex items-center gap-2">
+          {project.repo_url && (
+            <a
+              href={project.repo_url}
+              target="_blank"
+              rel="noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              title={repoLabel}
+              className="inline-flex items-center justify-center h-9 w-9 rounded-full bg-surface-container-high/60 hover:bg-surface-container-high text-on-surface-variant hover:text-on-surface transition-all border border-surface-container-high/80"
+            >
+              <svg viewBox="0 0 16 16" className="h-4 w-4 fill-current" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+              </svg>
+            </a>
+          )}
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              deploy.mutate();
+            }}
+            disabled={deploy.isPending || isBuilding}
+            className="primary-btn px-4 py-2 font-label text-label-md disabled:opacity-50"
+          >
+            {isBuilding
+              ? t("dashboard.deploying")
+              : isStopped
+                ? t("dashboard.start")
+                : deployment
+                  ? t("dashboard.redeploy")
+                  : t("dashboard.deploy")}
+          </button>
+        </div>
       </div>
-
     </article>
   );
 }

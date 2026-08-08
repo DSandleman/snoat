@@ -26,6 +26,47 @@ const schema = z.object({
 
   /** Caddy sitt admin-API – her opprettes rutene for deployede apper. */
   CADDY_ADMIN_URL: z.string().url().default("http://caddy:2019"),
+
+  /**
+   * Porten Caddy strømmer access-loggen til.
+   *
+   * Kun på `snoat`-nettverket – aldri i `ports:`. Alt som når denne porten kan
+   * dikte opp trafikk for et hvilket som helst prosjekt.
+   */
+  SNOAT_ANALYTICS_INGEST_PORT: z.coerce.number().int().positive().default(3100),
+
+  /**
+   * Hvor lenge treff samles i minnet før de skrives.
+   *
+   * Hele poenget med bufferet er at en app med 300 000 treff i timen blir én
+   * rad i stedet for 300 000 INSERT-er. Høyere verdi gir færre skrivinger, men
+   * mer som går tapt hvis prosessen dør brått.
+   */
+  SNOAT_ANALYTICS_FLUSH_MS: z.coerce.number().int().positive().default(5_000),
+
+  /**
+   * Tidssonen døgnskillet i statistikken følger.
+   *
+   * «I dag» skal bety norsk døgn for en norsk kunde – med UTC ville dagen
+   * begynt kl. 01:00 om vinteren og 02:00 om sommeren.
+   */
+  SNOAT_ANALYTICS_TIMEZONE: z.string().default("Europe/Oslo"),
+
+  /**
+   * Levetid for besøkende-hasher og for aggregatene (GDPR art. 5 nr. 1 e).
+   *
+   * Hashene har kortest levetid fordi de er det eneste som er per-person, selv
+   * om de er anonymisert. Aggregatene er ren statistikk uten personkobling og
+   * kan leve lenger – 400 dager gir sammenligning mot i fjor.
+   */
+  SNOAT_ANALYTICS_VISITOR_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
+  SNOAT_ANALYTICS_ROLLUP_RETENTION_DAYS: z.coerce.number().int().positive().default(400),
+
+  /**
+   * Sti til MMDB-databasen for landoppslag. Valgfri – uten den fungerer alt
+   * som før, men uten landstatistikk. Hentes med `scripts/fetch-geoip.mjs`.
+   */
+  SNOAT_GEOIP_DB_PATH: optionalEnv,
   /** Suffikset hvert prosjekt får sitt subdomene under. */
   SNOAT_APP_DOMAIN_SUFFIX: z.string().default(".snoat.localhost"),
   /** Docker-nettverket brukerapplikasjoner kobles til, slik at Caddy når dem. */
@@ -163,6 +204,95 @@ const schema = z.object({
    * Se `CONTEXT_FOR_AI/08_security_model.md`.
    */
   GITHUB_WEBHOOK_SECRET: optionalEnv,
+
+  /**
+   * Stripe – abonnement, betaling og kundeportal.
+   *
+   * Valgfri, på samme måte som GitHub App-en: uten `STRIPE_SECRET_KEY` svarer
+   * `/api/billing/checkout` og `/api/billing/portal` 503, og dashboardet viser
+   * planen som «Free» uten oppgraderingsknapp. Plattformen fungerer ellers som
+   * før – planhåndhevingen leser Supabase, ikke Stripe.
+   */
+  STRIPE_SECRET_KEY: optionalEnv,
+
+  /**
+   * Signaturhemmeligheten for webhook-endepunktet (`whsec_…`).
+   *
+   * I motsetning til `STRIPE_SECRET_KEY` er dette en verdi Stripe genererer per
+   * endepunkt – den fra `stripe listen` lokalt er en annen enn den i dashboardet
+   * deres. Er den tom, **avvises alle webhooks med 503**. Det er motsatt av
+   * hvordan GitHub-webhooken oppfører seg uten secret, og det er med vilje: en
+   * uverifisert GitHub-webhook starter et bygg, mens en uverifisert Stripe-
+   * webhook kan gi hvem som helst Business-planen med én POST.
+   */
+  STRIPE_WEBHOOK_SECRET: optionalEnv,
+
+  /**
+   * Price-ID-ene (`price_…`) fra Stripe, én per betalt plan. Mangler en av dem,
+   * kan den planen ikke kjøpes – checkout svarer 503 i stedet for å sende
+   * kunden til en tom kasse.
+   *
+   * ⚠️ **Én price-ID per plan, ikke én per valuta.** Prisene er multi-valuta
+   * (`currency_options` i Stripe), og checkout sender `currency` på sesjonen.
+   * Et eget sett variabler per marked ville doblet konfigurasjonen for hver
+   * valuta vi la til, og gjort det mulig å peke NOK- og EUR-prisen på hvert sitt
+   * produkt – og da ville `planForSubscription()` sett to ulike planer.
+   *
+   * Merk at det er *price*-ID-en, ikke product-ID-en. Bytter du pris senere,
+   * peker denne på den nye – eksisterende abonnenter beholder sin gamle pris,
+   * og `planForSubscription()` i `lib/stripe.ts` slår derfor også opp via metadata.
+   */
+  STRIPE_PRICE_PRO: optionalEnv,
+  STRIPE_PRICE_BUSINESS: optionalEnv,
+
+  /**
+   * Markedet som brukes når hverken abonnement, visningsspråk eller GeoIP sier
+   * noe. Se `services/markets.ts`.
+   */
+  SNOAT_DEFAULT_MARKET: z.enum(["no", "eu"]).default("no"),
+
+  /**
+   * Lar Stripe Tax regne ut norsk mva i kassen.
+   *
+   * ⚠️ Prisene i Stripe er opprettet med `tax_behavior: "exclusive"`, altså
+   * **eks. mva** – samme grunnlag som `PLAN_PRICES` i `services/markets.ts`.
+   * Står denne på `false`, selger vi derfor Pro til 199 kr uten å kreve inn de
+   * 25 prosentene i det hele tatt. Den skal stå på `true` i produksjon.
+   *
+   * At Stripe Tax er *aktivert* på kontoen holder ikke alene: uten en
+   * mva-registrering beregner Stripe 0 %, uten å feile. Registreringene legges
+   * inn i dashbordet (Tax → Registrations) – de kan ikke opprettes via API-et.
+   * Det er de, ikke dette flagget, som faktisk slår på avgiften. Norge trenger
+   * én registrering; salg til EU-forbrukere krever i tillegg VAT OSS
+   * (ikke-unionsordningen). Se `CONTEXT_FOR_AI/12_billing_and_plans.md`.
+   */
+  STRIPE_AUTOMATIC_TAX: z
+    .preprocess((value) => value === "true" || value === true, z.boolean())
+    .default(false),
+
+  /**
+   * Hvor mange dager en kunde med feilet betaling beholder planen sin.
+   *
+   * Stripe prøver kortet på nytt over omtrent to uker (Smart Retries) før
+   * abonnementet gir opp. Nådefristen bør dekke hele det vinduet: en kunde som
+   * mister produksjonen sin fordi kortet utløp, kommer ikke tilbake. Først når
+   * fristen er ute faller kontoen tilbake til gratisgrensene.
+   */
+  SNOAT_BILLING_GRACE_DAYS: z.coerce.number().int().nonnegative().default(14),
+
+  /**
+   * Skal bakgrunnsjobben faktisk stoppe apper som ligger over gratisgrensen
+   * etter at nådefristen er ute?
+   *
+   * Standard er **av**, og det er et bevisst valg. Mekanismen tar ned kjørende
+   * kundeapper uten at et menneske trykker på noe, og den skal ikke slås på før
+   * dunning-flyten er observert i produksjon. Med `false` kjører sveipet likevel
+   * og logger nøyaktig hva det ville gjort («ville suspendert …»), slik at
+   * effekten kan verifiseres i loggen før den blir ekte.
+   */
+  SNOAT_BILLING_SUSPEND_ENABLED: z
+    .preprocess((value) => value === "true" || value === true, z.boolean())
+    .default(false),
 });
 
 const parsed = schema.safeParse(process.env);

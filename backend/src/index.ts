@@ -10,9 +10,14 @@ import { logger } from "./lib/logger.js";
 import * as supabaseLib from "./lib/supabase.js";
 import { api } from "./routes/api.js";
 import { githubSetup } from "./routes/github.js";
+import { pricing } from "./routes/pricing.js";
+import { stripeWebhooks } from "./routes/stripe.js";
 import { tlsPermission } from "./routes/tls.js";
 import { githubWebhooks } from "./routes/webhooks.js";
+import { startAnalyticsIngest } from "./services/analytics-ingest.js";
 import { failOrphanedDeployments, reconcileRoutes } from "./services/deploy.js";
+import { startSuspensionSweep } from "./services/suspension.js";
+import type { ErrorDetail } from "./types.js";
 
 const app = new Hono();
 
@@ -21,7 +26,7 @@ app.use(
   cors({
     origin: config.SNOAT_FRONTEND_ORIGIN.split(",").map((value) => value.trim()),
     allowHeaders: ["Authorization", "Content-Type"],
-    allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
+    allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   }),
 );
 
@@ -67,6 +72,38 @@ app.get("/health", async (c) => {
  */
 app.route("/api/webhooks", githubWebhooks);
 
+/**
+ * Stripe-webhooks – abonnement opprettet, fornyet, feilet eller avsluttet.
+ *
+ * **Samme grunn til å ligge her som GitHub-webhooken over:** Stripe har ingen
+ * Supabase-sesjon, og `api` legger `requireAuth` på alt under `/api`. Flyttes
+ * denne linjen under `app.route("/api", api)`, begynner Stripe å få 401 – og
+ * symptomet er ikke en feilmelding hos oss, men kunder som betaler uten å få
+ * planen sin.
+ *
+ * Tilliten hviler på signaturen i `stripe-signature`. Uten
+ * `STRIPE_WEBHOOK_SECRET` avvises alt med 503; se `routes/stripe.ts`.
+ */
+app.route("/api/webhooks", stripeWebhooks);
+
+/**
+ * Trafikkanalysen har ingen offentlige endepunkter.
+ *
+ * Tidligere lå det en `/script.js` og en `/api/send` her, som proxiet Umami.
+ * De er borte med vilje: statistikken hentes nå ut av Caddys access-logg
+ * (`services/analytics-ingest.ts`), som allerede ser hver eneste forespørsel
+ * til hver eneste kundeapp. Det fjernet samtidig et åpent, uautentisert
+ * skriveendepunkt og en klientkontrollert `X-Forwarded-For` fra angrepsflaten.
+ */
+
+/**
+ * Plankatalogen for landingssiden – offentlig, og derfor over `/api`.
+ *
+ * Samme monteringsregel som webhookene: `api` legger `requireAuth` på alt under
+ * seg, så denne linjen må stå før den. Se `routes/pricing.ts`.
+ */
+app.route("/api/pricing", pricing);
+
 app.route("/api", api);
 
 /**
@@ -89,7 +126,18 @@ app.route("/github", githubSetup);
 
 app.onError((error, c) => {
   if (error instanceof HTTPException) {
-    return c.json({ error: error.message }, error.status);
+    // `cause` bærer en `ErrorDetail` når feilen er ment for kunden. `error` er
+    // fortsatt med: den er norsk, men den er bedre enn ingenting for et eldre
+    // dashboard eller et direkte API-kall som ikke kjenner kodene.
+    const detail = error.cause as ErrorDetail | undefined;
+
+    return c.json(
+      {
+        error: error.message,
+        ...(detail?.code ? { code: detail.code, params: detail.params ?? {} } : {}),
+      },
+      error.status,
+    );
   }
   logger.error({ err: error, path: c.req.path }, "Ubehandlet feil");
   return c.json({ error: "Intern feil" }, 500);
@@ -134,6 +182,16 @@ void (async () => {
   } catch (error) {
     logger.warn({ err: error }, "Kunne ikke synkronisere Caddy-ruter");
   }
+
+  // Etter reconcile med vilje: sveipet leser hvilke containere som kjører, og
+  // skal se verden slik den faktisk er – ikke slik den var før rutene ble
+  // gjenopprettet.
+  startSuspensionSweep();
+
+  // Caddy kobler seg til denne lytteren for å strømme access-loggen. Den har
+  // `soft_start` i loggkonfigurasjonen, så rekkefølgen er ikke kritisk: er vi
+  // sene ut, kobler Caddy seg til når vi er oppe.
+  startAnalyticsIngest();
 })();
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

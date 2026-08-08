@@ -5,6 +5,14 @@ import type { Project } from "../types.js";
 
 export interface AuthVariables {
   userId: string;
+  /**
+   * E-posten på Supabase-brukeren, brukt når Stripe-kunden opprettes.
+   *
+   * Kan være `undefined`: GoTrue tillater brukere uten e-post. Stripe godtar en
+   * kunde uten e-post, så det er ikke noe å feile på – kvitteringen havner bare
+   * ingen steder før kunden fyller den inn selv i portalen.
+   */
+  userEmail: string | undefined;
 }
 
 /**
@@ -29,6 +37,7 @@ export const requireAuth: MiddlewareHandler<{ Variables: AuthVariables }> = asyn
   }
 
   c.set("userId", data.user.id);
+  c.set("userEmail", data.user.email);
   await next();
 };
 

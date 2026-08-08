@@ -19,12 +19,17 @@ LOG_FILE="/tmp/snoat-deploy.log"
 #
 # Arrayet starter med ett element med vilje: `"${TOM_ARRAY[@]}"` under `set -u` er
 # en «unbound variable»-feil i bash 3.2, som fortsatt er standard-bash på macOS.
-SSH_KEY="${SNOAT_SSH_KEY:-$HOME/.ssh/id_rsa}"
 SSH_OPTS=(-o ConnectTimeout=20)
-if [[ -f "$SSH_KEY" ]]; then
-  SSH_OPTS+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
-else
-  echo "ADVARSEL: fant ikke SSH-nøkkelen $SSH_KEY – lar ssh velge selv." >&2
+if [[ -n "${SNOAT_SSH_KEY:-}" ]]; then
+  if [[ -f "$SNOAT_SSH_KEY" ]]; then
+    SSH_OPTS+=(-i "$SNOAT_SSH_KEY" -o IdentitiesOnly=yes)
+  else
+    echo "ADVARSEL: fant ikke spesifisert SSH-nøkkel $SNOAT_SSH_KEY – lar ssh velge selv." >&2
+  fi
+elif [[ -f "$HOME/.ssh/id_ed25519" ]]; then
+  SSH_OPTS+=(-i "$HOME/.ssh/id_ed25519")
+elif [[ -f "$HOME/.ssh/id_rsa" ]]; then
+  SSH_OPTS+=(-i "$HOME/.ssh/id_rsa")
 fi
 
 # Tøm loggfilen

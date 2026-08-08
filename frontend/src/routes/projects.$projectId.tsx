@@ -6,10 +6,15 @@ import { SnoatLogo } from "@/components/SnoatLogo";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { DeploymentStatusBadge } from "@/components/DeploymentStatusBadge";
 import { DnsSettingsTab } from "@/components/DnsSettingsTab";
+import { AnalyticsTab } from "@/components/AnalyticsTab";
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { useAuth, displayName, avatarUrl } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import { deployProject, stopProject } from "@/lib/api";
-import type { Deployment, Project } from "@/lib/database.types";
+import { createCheckout, deployProject, getPricing, stopProject, updateCustomDomain } from "@/lib/api";
+import { useApiErrorMessage } from "@/lib/errors";
+import { useFormatters } from "@/lib/format";
+import { useRequestedMarket } from "@/lib/market";
+import type { Deployment, Project, SubscriptionTier } from "@/lib/database.types";
 
 export const Route = createFileRoute("/projects/$projectId")({
   validateSearch: (search: Record<string, unknown>): { tab?: string } => {
@@ -20,12 +25,13 @@ export const Route = createFileRoute("/projects/$projectId")({
   component: ProjectDetailPage,
 });
 
-type Tab = "deployments" | "terminal" | "dns" | "env" | "settings";
+type Tab = "deployments" | "terminal" | "analytics" | "dns" | "env" | "settings";
 
 /** Fanene i prosjektvisningen, i den rekkefølgen de vises. */
 const TABS: ReadonlyArray<{ id: Tab; icon: string; labelKey: string }> = [
   { id: "deployments", icon: "history", labelKey: "project.tab_deployments" },
   { id: "terminal", icon: "terminal", labelKey: "project.tab_terminal" },
+  { id: "analytics", icon: "analytics", labelKey: "project.tab_analytics" },
   { id: "dns", icon: "dns", labelKey: "project.tab_dns" },
   { id: "env", icon: "key", labelKey: "project.tab_env" },
   { id: "settings", icon: "settings", labelKey: "project.tab_settings" },
@@ -85,6 +91,8 @@ function ProjectDetailPage() {
   const deployments = deploymentsQuery.data ?? [];
   const latestDeployment = deployments[0] ?? null;
   const isBuilding = latestDeployment?.status === "queued" || latestDeployment?.status === "building";
+  /** Brukeren har slått av appen. Backend nullstiller feltet ved neste deployment. */
+  const isStopped = Boolean(project?.stopped_at);
 
   const deployMutation = useMutation({
     mutationFn: () => deployProject(projectId),
@@ -101,8 +109,21 @@ function ProjectDetailPage() {
     mutationFn: () => stopProject(projectId),
     onSuccess: async () => {
       setError(null);
+      // `project` må med: det er `projects.stopped_at` som gjør stoppen synlig.
+      // Uten denne invalideringen sto siden igjen og sa «Live» om en app som var
+      // borte – det var nettopp derfor knappen så ut som den ikke gjorde noe.
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
       await queryClient.invalidateQueries({ queryKey: ["deployments", projectId] });
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (cause: Error) => setError(cause.message),
+  });
+
+  const domainMutation = useMutation({
+    mutationFn: (domain: string | null) => updateCustomDomain(projectId, domain),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     },
     onError: (cause: Error) => setError(cause.message),
   });
@@ -175,7 +196,7 @@ function ProjectDetailPage() {
                   onClick={() => void signOut().then(() => navigate({ to: "/" }))}
                   className="font-label text-label-md text-on-surface-variant transition-colors hover:text-on-surface"
                 >
-                  Logg ut
+                  {t("project.logout")}
                 </button>
               </div>
             )}
@@ -190,7 +211,11 @@ function ProjectDetailPage() {
           <div>
             <div className="flex items-center gap-3">
               <h1 className="font-display text-headline-lg text-on-background">{project.name}</h1>
-              <DeploymentStatusBadge status={latestDeployment?.status ?? null} />
+              <DeploymentStatusBadge
+                status={latestDeployment?.status ?? null}
+                stopped={isStopped}
+                stopping={stopMutation.isPending}
+              />
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-4 text-body-md">
@@ -204,7 +229,9 @@ function ProjectDetailPage() {
                 {repoLabel}
               </a>
 
-              {latestDeployment?.url ? (
+              {/* URL-en skjules når appen er stoppet. En lenke som ser levende
+                  ut, men gir 502, er verre enn ingen lenke. */}
+              {latestDeployment?.url && !isStopped ? (
                 <a
                   href={latestDeployment.url}
                   target="_blank"
@@ -224,24 +251,31 @@ function ProjectDetailPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            {latestDeployment?.status === "success" && (
+            {/* Skjules når appen allerede er stoppet – det er ingenting igjen å
+                stoppe, og en knapp som ikke gjør noe er akkurat det som fikk
+                stoppen til å se ødelagt ut. */}
+            {latestDeployment?.status === "success" && !isStopped && (
               <button
                 type="button"
                 onClick={() => stopMutation.mutate()}
                 disabled={stopMutation.isPending}
                 className="ghost-btn px-4 py-2.5 font-label text-label-md text-error hover:bg-error/10"
               >
-                {stopMutation.isPending ? "Stopper…" : t("project.stop_project")}
+                {stopMutation.isPending ? t("project_details.stopping") : t("project.stop_project")}
               </button>
             )}
 
             <button
               type="button"
               onClick={() => deployMutation.mutate()}
-              disabled={deployMutation.isPending || isBuilding}
+              disabled={deployMutation.isPending || isBuilding || stopMutation.isPending}
               className="primary-btn px-6 py-2.5 font-label text-label-md disabled:opacity-50"
             >
-              {isBuilding ? t("project.deploying") : t("project.redeploy")}
+              {isBuilding
+                ? t("project.deploying")
+                : isStopped
+                  ? t("project.start_project")
+                  : t("project.redeploy")}
             </button>
           </div>
         </div>
@@ -274,8 +308,17 @@ function ProjectDetailPage() {
             <TerminalTab latestDeployment={latestDeployment} isBuilding={isBuilding} />
           )}
 
+          {activeTab === "analytics" && (
+            <AnalyticsTab project={project} />
+          )}
+
           {activeTab === "dns" && (
-            <DnsSettingsTab project={project} isLive={latestDeployment?.status === "success"} />
+            <DnsSettingsTab 
+              project={project} 
+              isLive={latestDeployment?.status === "success"}
+              onSaveDomain={(domain) => domainMutation.mutate(domain)}
+              isSaving={domainMutation.isPending}
+            />
           )}
 
           {activeTab === "env" && (
@@ -468,8 +511,8 @@ function BuildStageCard({ deployment }: { deployment: Deployment | null }) {
               <span className="material-symbols-outlined icon-sm text-primary animate-spin">progress_activity</span>
             </div>
           ) : isSuccess ? (
-            <div className="flex h-7 w-7 items-center justify-center rounded-full bg-secondary/15">
-              <span className="material-symbols-outlined icon-sm text-secondary">check_circle</span>
+            <div className="flex h-7 w-7 items-center justify-center text-secondary">
+              <span className="material-symbols-outlined icon-md">check</span>
             </div>
           ) : isFailed ? (
             <div className="flex h-7 w-7 items-center justify-center rounded-full bg-error/15">
@@ -515,33 +558,39 @@ function DeploymentsTab({
   onOpenTerminal: () => void;
 }) {
   const { t } = useTranslation();
+  const format = useFormatters();
   const latest = deployments[0];
   const latestBuildDuration = useBuildDuration(latest ?? null);
   const isBuilding = latest?.status === "queued" || latest?.status === "building";
+
+  const latestSuccessId = deployments.find((d) => d.status === "success")?.id;
 
   return (
     <div className="flex flex-col gap-8">
       {/* Latest Deployment Summary Card */}
       <div className="floating-card p-6 md:p-8 flex flex-col gap-6">
-        <h2 className="font-headline text-headline-md text-on-surface">Seneste Deployment</h2>
+        <h2 className="font-headline text-headline-md text-on-surface">{t("project_details.latest_deployment")}</h2>
         {latest ? (
           <div className="flex flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl bg-surface-container p-4">
               <div className="flex items-center gap-3">
-                <DeploymentStatusBadge status={latest.status} />
+                <DeploymentStatusBadge
+                  status={latest.status}
+                  isLive={latest.id === latestSuccessId}
+                />
                 <span className="font-mono text-sm text-on-surface-variant">
-                  {latest.commit_hash ? latest.commit_hash.slice(0, 7) : "Manuell build"}
+                  {latest.commit_hash ? latest.commit_hash.slice(0, 7) : t("project_details.manual_build")}
                 </span>
               </div>
               <div className="flex items-center gap-4">
                 {latestBuildDuration && (
                   <span className="inline-flex items-center gap-1.5 font-mono text-sm text-primary bg-primary/10 px-3 py-1 rounded-full font-medium">
                     <span className="material-symbols-outlined icon-sm">timer</span>
-                    {isBuilding ? `Bygger: ${latestBuildDuration}` : `Byggetid: ${latestBuildDuration}`}
+                    {isBuilding ? t("project_details.building_duration", { duration: latestBuildDuration }) : t("project_details.build_duration", { duration: latestBuildDuration })}
                   </span>
                 )}
                 <span className="font-body text-body-md text-on-surface-variant">
-                  {new Date(latest.created_at).toLocaleString("nb-NO")}
+                  {format.dateTime(latest.created_at)}
                 </span>
               </div>
             </div>
@@ -556,12 +605,12 @@ function DeploymentsTab({
                 className="ghost-btn flex items-center gap-2 px-4 py-2 font-label text-label-md"
               >
                 <span className="material-symbols-outlined icon-sm">terminal</span>
-                Vis logger i terminal
+                {t("project_details.view_logs")}
               </button>
             </div>
           </div>
         ) : (
-          <p className="font-body text-body-md text-on-surface-variant">Ingen deployments har blitt utført ennå.</p>
+          <p className="font-body text-body-md text-on-surface-variant">{t("project_details.no_deployments")}</p>
         )}
       </div>
 
@@ -572,17 +621,18 @@ function DeploymentsTab({
         </h2>
 
         {deployments.length === 0 ? (
-          <p className="font-body text-body-md text-on-surface-variant">Ingen historikk.</p>
+          <p className="font-body text-body-md text-on-surface-variant">{t("project_details.no_history")}</p>
         ) : (
           <div className="flex flex-col divide-y divide-surface-variant/20">
             {deployments.map((d) => {
               const duration = getDeploymentDuration(d);
+              const isLive = d.id === latestSuccessId;
               return (
                 <div key={d.id} className="flex flex-wrap items-center justify-between gap-4 py-4 first:pt-0 last:pb-0">
                   <div className="flex items-center gap-4">
-                    <DeploymentStatusBadge status={d.status} />
+                    <DeploymentStatusBadge status={d.status} isLive={isLive} />
                     <span className="font-mono text-sm text-on-surface">
-                      {d.commit_hash ? d.commit_hash.slice(0, 7) : "Manuell deploy"}
+                      {d.commit_hash ? d.commit_hash.slice(0, 7) : t("project_details.manual_deploy")}
                     </span>
                   </div>
                   <div className="flex items-center gap-6">
@@ -593,16 +643,16 @@ function DeploymentsTab({
                       </span>
                     )}
                     <span className="font-body text-body-md text-on-surface-variant">
-                      {new Date(d.created_at).toLocaleString("nb-NO")}
+                      {format.dateTime(d.created_at)}
                     </span>
-                    {d.url && (
+                    {d.url && isLive && (
                       <a
                         href={d.url}
                         target="_blank"
                         rel="noreferrer"
                         className="font-label text-label-md text-primary hover:underline"
                       >
-                        Besøk
+                        {t("project.visit")}
                       </a>
                     )}
                   </div>
@@ -631,7 +681,7 @@ function TerminalTab({
   const [autoScroll, setAutoScroll] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  const logs = latestDeployment?.logs ?? "Ingen logger tilgjengelig for dette prosjektet ennå.";
+  const logs = latestDeployment?.logs ?? t("project.no_logs_available");
   const isSuccess = latestDeployment?.status === "success";
   const isFailed = latestDeployment?.status === "failed";
 
@@ -657,17 +707,17 @@ function TerminalTab({
           {isBuilding ? (
             <span className="flex items-center gap-1.5 text-xs text-primary bg-primary/10 px-2.5 py-0.5 rounded-full animate-pulse font-mono">
               <span className="h-2 w-2 rounded-full bg-primary animate-ping" />
-              Bygger nå…
+              {t("project_details.process_running")}
             </span>
           ) : isSuccess ? (
-            <span className="flex items-center gap-1.5 text-xs text-secondary bg-secondary/15 px-2.5 py-0.5 rounded-full font-mono font-medium">
-              <span className="material-symbols-outlined icon-sm">check_circle</span>
-              Prosess avsluttet (Suksess)
+            <span className="flex items-center gap-1.5 text-xs text-secondary font-mono font-medium">
+              <span className="material-symbols-outlined icon-sm">check</span>
+              {t("project_details.process_success")}
             </span>
           ) : isFailed ? (
             <span className="flex items-center gap-1.5 text-xs text-error bg-error/15 px-2.5 py-0.5 rounded-full font-mono font-medium">
               <span className="material-symbols-outlined icon-sm">error</span>
-              Prosess avsluttet (Feilet)
+              {t("project_details.process_failed")}
             </span>
           ) : null}
         </div>
@@ -703,10 +753,10 @@ function TerminalTab({
           <div className="mt-6 pt-4 border-t border-emerald-500/20 text-xs font-mono text-emerald-300/80 flex items-center justify-between">
             <span>
               {isSuccess
-                ? "Process finished with exit code 0"
-                : "Process terminated with error code 1"}
+                ? t("project_details.process_finished_code0")
+                : t("project_details.process_finished_code1")}
             </span>
-            <span className="opacity-60">Terminaløkt avsluttet</span>
+            <span className="opacity-60">{t("project_details.terminal_session_ended")}</span>
           </div>
         )}
       </div>
@@ -883,7 +933,7 @@ function EnvImportModal({
                 </p>
                 {parsedVars.length > 0 && (
                   <p className="mt-1 font-body text-xs text-primary font-medium">
-                    {parsedVars.length} variabler funnet
+                    {t("project.env_vars_found", { count: parsedVars.length })}
                   </p>
                 )}
               </div>
@@ -899,7 +949,7 @@ function EnvImportModal({
               />
               {parsedVars.length > 0 && (
                 <p className="font-body text-xs text-primary font-medium">
-                  {parsedVars.length} variabler funnet
+                  {t("project.env_vars_found", { count: parsedVars.length })}
                 </p>
               )}
             </div>
@@ -969,10 +1019,10 @@ function EnvTab({ project }: { project: Project }) {
         .eq("id", project.id);
 
       if (error) throw error;
-      setMessage("Miljøvariabler ble lagret.");
+      setMessage(t("project.env_vars_saved"));
       await queryClient.invalidateQueries({ queryKey: ["project", project.id] });
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Kunne ikke lagre miljøvariabler");
+      setMessage(err instanceof Error ? err.message : t("project.env_vars_save_error"));
     } finally {
       setSaving(false);
     }
@@ -1014,7 +1064,7 @@ function EnvTab({ project }: { project: Project }) {
         ? merged
         : [{ id: Math.random().toString(36).substring(2, 9), key: "", value: "" }],
     );
-    setMessage(`${imported.length} variabler importert.`);
+    setMessage(t("project.env_vars_imported", { count: imported.length }));
   };
 
   return (
@@ -1052,14 +1102,14 @@ function EnvTab({ project }: { project: Project }) {
             >
               <input
                 type="text"
-                placeholder="NØKKEL (f.eks. API_KEY)"
+                placeholder={t("project_details.env_key_placeholder")}
                 value={pair.key}
                 onChange={(e) => updateEnvPair(pair.id, "key", e.target.value)}
                 className="w-1/2 rounded-xl bg-surface-container px-4 py-3 font-mono text-sm text-on-surface outline-none focus:ring-2 ring-primary/60 transition-all"
               />
               <input
                 type="text"
-                placeholder="Verdi"
+                placeholder={t("project_details.env_value_placeholder")}
                 value={pair.value}
                 onChange={(e) => updateEnvPair(pair.id, "value", e.target.value)}
                 className="w-1/2 rounded-xl bg-surface-container px-4 py-3 font-mono text-sm text-on-surface outline-none focus:ring-2 ring-primary/60 transition-all"
@@ -1083,7 +1133,7 @@ function EnvTab({ project }: { project: Project }) {
             onClick={addEnvPair}
             className="ghost-btn px-4 py-2 font-label text-label-md transition-all active:scale-[0.98]"
           >
-            + Legg til ny variabel
+            {t("project_details.env_add_var")}
           </button>
 
           <button
@@ -1091,7 +1141,7 @@ function EnvTab({ project }: { project: Project }) {
             disabled={saving}
             className="primary-btn px-6 py-3 font-label text-label-md disabled:opacity-50"
           >
-            {saving ? "Lagrer…" : t("project.save_changes")}
+            {saving ? t("project.saving") : t("project.save_changes")}
           </button>
         </div>
       </form>
@@ -1103,6 +1153,221 @@ function EnvTab({ project }: { project: Project }) {
         onImport={handleImportedVars}
       />
     </>
+  );
+}
+
+// -----------------------------------------------------------------------------
+// Component: Project Plan & Billing Card (Collapsible Menu)
+// -----------------------------------------------------------------------------
+function ProjectPlanCard({ project }: { project: Project }) {
+  const { t } = useTranslation();
+  const format = useFormatters();
+  const errorMessage = useApiErrorMessage();
+  const market = useRequestedMarket();
+  const search = Route.useSearch() as { checkout?: string };
+  const [upgradingPlan, setUpgradingPlan] = useState<"pro" | "business" | null>(null);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+
+  const currentPlan: SubscriptionTier = project.plan ?? "free";
+
+  // Samme katalog som betalingssiden og landingssiden. Boksene under sa
+  // tidligere «0 kr», «199 kr» og «799 kr» rett i JSX-en – tre steder å glemme
+  // ved neste prisendring, og null mulighet for en annen valuta.
+  const pricing = useQuery({
+    queryKey: ["pricing", market],
+    queryFn: () => getPricing(market),
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+  });
+
+  /** Prisen for en plan, eller tom streng til katalogen er hentet. */
+  const priceOf = (plan: SubscriptionTier): string => {
+    const offer = pricing.data?.plans.find((candidate) => candidate.id === plan);
+    if (!offer) return "";
+    return offer.price === 0 ? t("project_plan.free_price") : format.money(offer.price, offer.currency);
+  };
+
+  const handleUpgrade = async (plan: "pro" | "business") => {
+    setUpgradingPlan(plan);
+    setCheckoutError(null);
+    try {
+      const { url } = await createCheckout(plan, market, project.id);
+      window.location.href = url;
+    } catch (err) {
+      setCheckoutError(errorMessage(err));
+      setUpgradingPlan(null);
+    }
+  };
+
+  const planSpecs = {
+    free: { ram: "256 MB", cpu: "0.5 vCPU", name: "Free", badgeBg: "bg-surface-variant text-on-surface-variant" },
+    pro: { ram: "1 GB", cpu: "1 vCPU", name: "Pro", badgeBg: "bg-primary/15 text-primary font-semibold" },
+    business: { ram: "8 GB", cpu: "4 vCPU", name: "Business", badgeBg: "bg-secondary/20 text-secondary font-semibold" },
+  };
+
+  const currentSpecs = planSpecs[currentPlan] ?? planSpecs.free;
+
+  return (
+    <div className="floating-card p-6 md:p-8 flex flex-col gap-6">
+      <Accordion type="single" collapsible defaultValue={search.checkout ? "plan-menu" : undefined} className="w-full">
+        <AccordionItem value="plan-menu" className="border-b-0">
+          <AccordionTrigger className="hover:no-underline p-0 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="font-label text-label-sm text-on-surface-variant uppercase tracking-wider">
+                {t("project_plan.section_label")}
+              </span>
+              <span className="h-4 w-px bg-surface-variant/40 hidden md:inline" />
+              <div className="flex items-center gap-2">
+                <span className="font-headline text-headline-md text-on-surface">
+                  {t("project_plan.current_plan_title")}:
+                </span>
+                <span className={`px-3.5 py-1 rounded-full font-label text-label-md ${currentSpecs.badgeBg}`}>
+                  {currentSpecs.name}
+                </span>
+              </div>
+            </div>
+          </AccordionTrigger>
+
+          <AccordionContent className="flex flex-col gap-6 pt-6">
+            {search.checkout === "ok" && (
+              <div className="rounded-xl bg-secondary/15 p-4 font-body text-body-md text-secondary border border-secondary/20 flex items-center gap-3">
+                <span className="material-symbols-outlined icon-md">check_circle</span>
+                {t("project_plan.checkout_success")}
+              </div>
+            )}
+
+            {search.checkout === "avbrutt" && (
+              <div className="rounded-xl bg-surface-container p-4 font-body text-body-md text-on-surface-variant border border-surface-variant/30">
+                {t("project_plan.checkout_canceled", { plan: currentSpecs.name })}
+              </div>
+            )}
+
+            {checkoutError && (
+              <div role="alert" className="rounded-xl bg-error/10 p-4 font-body text-body-md text-error">
+                {checkoutError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              {/* Free Plan Box */}
+              <div className={`rounded-2xl p-5 border flex flex-col justify-between ${currentPlan === "free" ? "border-primary/40 bg-primary/5 shadow-sm" : "border-surface-variant/30 bg-surface-container/40"}`}>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-headline text-headline-sm text-on-surface">Free</span>
+                    {currentPlan === "free" && (
+                      <span className="text-xs font-label px-2.5 py-0.5 rounded-full bg-primary/15 text-primary font-semibold">{t("project_plan.active")}</span>
+                    )}
+                  </div>
+                  <p className="font-body text-body-sm text-on-surface-variant mb-4">{t("project_plan.free_desc")}</p>
+                  <ul className="flex flex-col gap-2 font-body text-body-sm text-on-surface-variant">
+                    <li className="flex items-center gap-2">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.free_f1")}
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.free_f2")}
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.free_f3")}
+                    </li>
+                    <li className="flex items-center gap-2 text-on-surface-variant/50">
+                      <span className="material-symbols-outlined icon-sm text-on-surface-variant/40">close</span> {t("project_plan.free_f4")}
+                    </li>
+                  </ul>
+                </div>
+                <div className="mt-6 pt-4 border-t border-surface-variant/20">
+                  <span className="font-display text-headline-sm text-on-surface">{priceOf("free")}</span>
+                  <span className="font-body text-body-sm text-on-surface-variant"> {t("project_plan.per_month")}</span>
+                </div>
+              </div>
+
+              {/* Pro Plan Box */}
+              <div className={`rounded-2xl p-5 border flex flex-col justify-between ${currentPlan === "pro" ? "border-primary bg-primary/10 shadow-sm" : "border-surface-variant/30 bg-surface-container/40 hover:border-primary/50"} transition-all`}>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-headline text-headline-sm text-on-surface">Pro</span>
+                    {currentPlan === "pro" && (
+                      <span className="text-xs font-label px-2.5 py-0.5 rounded-full bg-primary text-on-primary font-semibold">{t("project_plan.active")}</span>
+                    )}
+                  </div>
+                  <p className="font-body text-body-sm text-on-surface-variant mb-4">{t("project_plan.pro_desc")}</p>
+                  <ul className="flex flex-col gap-2 font-body text-body-sm text-on-surface-variant">
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.pro_f1")}
+                    </li>
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.pro_f2")}
+                    </li>
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.pro_f3")}
+                    </li>
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-primary">check</span> {t("project_plan.pro_f4")}
+                    </li>
+                  </ul>
+                </div>
+                <div className="mt-6 pt-4 border-t border-surface-variant/20 flex items-center justify-between">
+                  <div>
+                    <span className="font-display text-headline-sm text-on-surface">{priceOf("pro")}</span>
+                    <span className="font-body text-body-sm text-on-surface-variant"> {t("project_plan.per_month")}</span>
+                  </div>
+                  {currentPlan !== "pro" && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void handleUpgrade("pro");
+                      }}
+                      disabled={upgradingPlan !== null}
+                      className="primary-btn px-4 py-2 font-label text-label-md disabled:opacity-50"
+                    >
+                      {upgradingPlan === "pro" ? t("project_plan.loading") : currentPlan === "business" ? t("project_plan.change") : t("project_plan.upgrade")}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Business Plan Box */}
+              <div className={`rounded-2xl p-5 border flex flex-col justify-between ${currentPlan === "business" ? "border-secondary bg-secondary/10 shadow-sm" : "border-surface-variant/30 bg-surface-container/40 hover:border-secondary/50"} transition-all`}>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-headline text-headline-sm text-on-surface">Business</span>
+                    {currentPlan === "business" && (
+                      <span className="text-xs font-label px-2.5 py-0.5 rounded-full bg-secondary text-on-secondary font-semibold">{t("project_plan.active")}</span>
+                    )}
+                  </div>
+                  <p className="font-body text-body-sm text-on-surface-variant mb-4">{t("project_plan.business_desc")}</p>
+                  <ul className="flex flex-col gap-2 font-body text-body-sm text-on-surface-variant">
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-secondary">check</span> {t("project_plan.business_f1")}
+                    </li>
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-secondary">check</span> {t("project_plan.business_f2")}
+                    </li>
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-secondary">check</span> {t("project_plan.business_f3")}
+                    </li>
+                    <li className="flex items-center gap-2 font-medium text-on-surface">
+                      <span className="material-symbols-outlined icon-sm text-secondary">check</span> {t("project_plan.business_f4")}
+                    </li>
+                  </ul>
+                </div>
+                <div className="mt-6 pt-4 border-t border-surface-variant/20 flex items-center justify-between">
+                  <div>
+                    <span className="font-display text-headline-sm text-on-surface">{t("project_plan.contact_price", "Skreddersydd")}</span>
+                  </div>
+                  <a
+                    href="mailto:post@frostbytes.no?subject=Foresp%C3%B8rsel%20om%20Business-plan%20p%C3%A5%20Snoat"
+                    className="secondary-btn px-4 py-2 font-label text-label-md inline-block text-center"
+                  >
+                    {t("project_plan.contact_us", "Kontakt oss")}
+                  </a>
+                </div>
+              </div>
+            </div>
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+    </div>
   );
 }
 
@@ -1136,10 +1401,10 @@ function SettingsTab({ project }: { project: Project }) {
         .eq("id", project.id);
 
       if (error) throw error;
-      setMessage("Innstillinger ble lagret.");
+      setMessage(t("project.settings_saved"));
       await queryClient.invalidateQueries({ queryKey: ["project", project.id] });
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Kunne ikke lagre innstillinger");
+      setMessage(err instanceof Error ? err.message : t("project.settings_save_error"));
     } finally {
       setSaving(false);
     }
@@ -1153,15 +1418,18 @@ function SettingsTab({ project }: { project: Project }) {
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       void navigate({ to: "/dashboard" });
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Kunne ikke slette prosjektet");
+      alert(err instanceof Error ? err.message : t("project.delete_project_error"));
     }
   };
 
   return (
     <div className="flex flex-col gap-8">
+      {/* Project Plan & Subscription Card */}
+      <ProjectPlanCard project={project} />
+
       {/* General Settings */}
       <form onSubmit={saveSettings} className="floating-card p-6 md:p-8 flex flex-col gap-6">
-        <h2 className="font-headline text-headline-md text-on-surface">Prosjektinnstillinger</h2>
+        <h2 className="font-headline text-headline-md text-on-surface">{t("project.project_settings")}</h2>
 
         {message && (
           <div className="rounded-xl bg-primary/10 p-4 font-body text-body-md text-primary">
@@ -1169,57 +1437,54 @@ function SettingsTab({ project }: { project: Project }) {
           </div>
         )}
 
-        <label className="flex flex-col gap-2">
-          <span className="font-label text-label-md text-on-surface">{t("project.settings_build_cmd")}</span>
-          <input
-            type="text"
-            value={buildCommand}
-            onChange={(e) => setBuildCommand(e.target.value)}
-            placeholder="f.eks. npm run build"
-            className="rounded-xl bg-surface-container px-4 py-3 font-body text-body-md text-on-surface outline-none ring-primary/60 focus:ring-2 max-w-lg"
-          />
-        </label>
+        <Accordion type="single" collapsible className="w-full">
+          <AccordionItem value="advanced" className="border-b-0">
+            <AccordionTrigger className="hover:no-underline text-label-md font-label py-0 pb-4">
+              {t("project.advanced_build_settings", "Avanserte byggeinnstillinger")}
+            </AccordionTrigger>
+            <AccordionContent className="flex flex-col gap-6 pt-2">
+              <label className="flex flex-col gap-2">
+                <span className="font-label text-label-md text-on-surface">{t("project.settings_build_cmd")}</span>
+                <input
+                  type="text"
+                  value={buildCommand}
+                  onChange={(e) => setBuildCommand(e.target.value)}
+                  placeholder={t("project_details.build_cmd_placeholder")}
+                  className="rounded-xl bg-surface-container px-4 py-3 font-body text-body-md text-on-surface outline-none ring-primary/60 focus:ring-2 max-w-lg"
+                />
+              </label>
 
-        <label className="flex flex-col gap-2">
-          <span className="font-label text-label-md text-on-surface">Statisk output-katalog</span>
-          <input
-            type="text"
-            value={staticOutputDir}
-            onChange={(e) => setStaticOutputDir(e.target.value)}
-            placeholder="f.eks. dist — la stå tom for å kjøre som server"
-            className="rounded-xl bg-surface-container px-4 py-3 font-body text-body-md text-on-surface outline-none ring-primary/60 focus:ring-2 max-w-lg"
-          />
-          <span className="font-body text-body-sm text-on-surface-variant max-w-lg">
-            Produserer prosjektet bare filer, serverer Caddy dem direkte fra disk — ingen
-            container kjører, og siden koster ingenting når ingen besøker den. Vite og Astro
-            bygger til <code className="font-mono">dist</code>, Next.js med{" "}
-            <code className="font-mono">output: 'export'</code> til{" "}
-            <code className="font-mono">out</code>. La feltet stå tomt for apper som trenger en
-            server (vanlig Next.js, Express, API-er).
-          </span>
-        </label>
+              <label className="flex flex-col gap-2">
+                <span className="font-label text-label-md text-on-surface">{t("project.static_output_dir")}</span>
+                <input
+                  type="text"
+                  value={staticOutputDir}
+                  onChange={(e) => setStaticOutputDir(e.target.value)}
+                  placeholder={t("project.static_output_dir_placeholder")}
+                  className="rounded-xl bg-surface-container px-4 py-3 font-body text-body-md text-on-surface outline-none ring-primary/60 focus:ring-2 max-w-lg"
+                />
+                <span className="font-body text-body-sm text-on-surface-variant max-w-lg" dangerouslySetInnerHTML={{ __html: t("project.static_output_dir_help") }} />
+              </label>
 
-        {staticOutputDir.trim() !== "" && (
-          <label className="flex items-start gap-3 max-w-lg">
-            <input
-              type="checkbox"
-              checked={spaFallback}
-              onChange={(e) => setSpaFallback(e.target.checked)}
-              className="mt-1 h-5 w-5 rounded accent-primary"
-            />
-            <span className="flex flex-col gap-1">
-              <span className="font-label text-label-md text-on-surface">
-                Klientruting (SPA)
-              </span>
-              <span className="font-body text-body-sm text-on-surface-variant">
-                Serverer <code className="font-mono">index.html</code> for adresser som ikke
-                finnes som fil, slik at dype lenker virker ved direkte innlasting. Skru på for
-                React Router eller TanStack Router. La stå av for Astro, Hugo og Eleventy — de
-                har sin egen 404-side.
-              </span>
-            </span>
-          </label>
-        )}
+              {staticOutputDir.trim() !== "" && (
+                <label className="flex items-start gap-3 max-w-lg">
+                  <input
+                    type="checkbox"
+                    checked={spaFallback}
+                    onChange={(e) => setSpaFallback(e.target.checked)}
+                    className="mt-1 h-5 w-5 rounded accent-primary"
+                  />
+                  <span className="flex flex-col gap-1">
+                    <span className="font-label text-label-md text-on-surface">
+                      {t("project.spa_fallback")}
+                    </span>
+                    <span className="font-body text-body-sm text-on-surface-variant" dangerouslySetInnerHTML={{ __html: t("project.spa_fallback_help") }} />
+                  </span>
+                </label>
+              )}
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
 
         <div className="pt-2">
           <button
@@ -1227,7 +1492,7 @@ function SettingsTab({ project }: { project: Project }) {
             disabled={saving}
             className="primary-btn px-6 py-3 font-label text-label-md disabled:opacity-50"
           >
-            {saving ? "Lagrer…" : t("project.save_changes")}
+            {saving ? t("project.saving") : t("project.save_changes")}
           </button>
         </div>
       </form>
@@ -1236,7 +1501,7 @@ function SettingsTab({ project }: { project: Project }) {
       <div className="floating-card p-6 md:p-8 border-error/20">
         <h2 className="mb-2 font-headline text-headline-md text-error">{t("project.settings_danger_zone")}</h2>
         <p className="mb-6 font-body text-body-md text-on-surface-variant">
-          Sletting av prosjektet vil fjerne alle deployments og innstillinger permanent.
+          {t("project.delete_project_warning")}
         </p>
 
         <button

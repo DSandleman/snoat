@@ -133,9 +133,10 @@ export async function ping(): Promise<void> {
  * DELETE etterfulgt av POST ville hatt et vindu der subdomenet ikke matchet
  * noen rute i det hele tatt, og brukerne ville fått 404.
  */
-export async function upsertAppRoute(slug: string, upstream: string): Promise<string> {
+export async function upsertAppRoute(slug: string, customDomain: string | null, upstream: string): Promise<string> {
   return await upsertRoute(
     slug,
+    customDomain,
     [{ handler: "reverse_proxy", upstreams: [{ dial: upstream }] }],
     { upstream },
   );
@@ -156,10 +157,11 @@ export async function upsertAppRoute(slug: string, upstream: string): Promise<st
  */
 export async function upsertStaticRoute(
   slug: string,
+  customDomain: string | null,
   root: string,
   spaFallback: boolean,
 ): Promise<string> {
-  return await upsertRoute(slug, staticHandlers(root, spaFallback), { root, spaFallback });
+  return await upsertRoute(slug, customDomain, staticHandlers(root, spaFallback), { root, spaFallback });
 }
 
 function staticHandlers(root: string, spaFallback: boolean): Array<Record<string, unknown>> {
@@ -200,14 +202,16 @@ function staticHandlers(root: string, spaFallback: boolean): Array<Record<string
 
 async function upsertRoute(
   slug: string,
+  customDomain: string | null,
   handle: Array<Record<string, unknown>>,
   logContext: Record<string, unknown>,
 ): Promise<string> {
   const hostname = appHostname(slug);
+  const hosts = customDomain ? [hostname, customDomain] : [hostname];
 
   const route: CaddyRoute = {
     "@id": routeId(slug),
-    match: [{ host: [hostname] }],
+    match: [{ host: hosts }],
     handle,
     terminal: true,
   };
@@ -260,9 +264,9 @@ export async function getAppRoute(slug: string): Promise<CaddyRoute | null> {
   }
 }
 
-/** Setter en tidligere lest rute tilbake. Brukes ved rollback. */
-export async function restoreAppRoute(slug: string, route: CaddyRoute): Promise<void> {
-  await upsertRoute(slug, route.handle, { restored: true });
+/** Setter en tidligere lest rute tilbake. Brukes ved rollback eller endring av domene. */
+export async function restoreAppRoute(slug: string, customDomain: string | null, route: CaddyRoute): Promise<void> {
+  await upsertRoute(slug, customDomain, route.handle, { restored: true });
 }
 
 export function routeUpstream(route: CaddyRoute | null): string | null {

@@ -265,7 +265,12 @@ SNOAT_MAX_CONCURRENT_BUILDS=${preserved("SNOAT_MAX_CONCURRENT_BUILDS", "1")}
 SNOAT_BUILD_NODE_MEMORY_MB=${preserved("SNOAT_BUILD_NODE_MEMORY_MB", "1536")}
 # Statiske sider serveres fra disk uten container (03_deployment_flow.md).
 SNOAT_SITES_DIR=${preserved("SNOAT_SITES_DIR", "/srv/sites")}
-SNOAT_STATIC_KEEP_VERSIONS=${preserved("SNOAT_STATIC_KEEP_VERSIONS", "3")}
+# --- Stripe: abonnement og betaling ------------------------------------------
+STRIPE_SECRET_KEY=${preserved("STRIPE_SECRET_KEY", "")}
+STRIPE_WEBHOOK_SECRET=${preserved("STRIPE_WEBHOOK_SECRET", "")}
+STRIPE_PRICE_PRO=${preserved("STRIPE_PRICE_PRO", "")}
+STRIPE_PRICE_BUSINESS=${preserved("STRIPE_PRICE_BUSINESS", "")}
+STRIPE_AUTOMATIC_TAX=${preserved("STRIPE_AUTOMATIC_TAX", "true")}
 `;
 
 writeFileSync(envPath, env, { mode: 0o600 });

@@ -280,3 +280,76 @@ stier som forsøker `..`, absolutt sti og skall-metategn.
 3. **Zero-downtime & Webhooks:** Snoat har i sin nåværende arkitektur rullerende oppdateringer via Caddy, og støtter manuell samt webhook-trigget bygging.
 4. **Custom Domains & DNS:** Snoat ruter internt via Caddy. En egen enkel DNS-fane i dashboardet gir brukeren mulighet til å skrive inn sitt domene, hvorpå DNS-oppføringene (A og CNAME) genereres dynamisk i en ren vertikal liste med kopieringsknapper for hver verdi. Fanen er foreløpig **kun veiledning** – selve rutingen og sertifikatet for et eget domene er ikke implementert. Detaljene og det som gjenstår ligger i `11_custom_domains_and_dns.md`.
 5. **Byggetid:** Vercel bruker ferdigbakte byggeimages og bygger for de fleste rammeverk *ikke* et container-image – bygget kjører på en dedikert maskin og pakkes som statiske filer pluss functions. Snoat provisjonerer verktøykjeden med Nix under bygget og committer fulle OCI-lag, på én delt CPU-kjerne. Nix-steget caches per nixpkgs-revisjon, så det er første build som er dyr – men maskinvaren er den dominerende forskjellen. Se `03_deployment_flow.md` og `09_production_deployment.md`.
+
+---
+
+## 10. Trafikkanalytikk og Besøksstatistikk (7. august 2026)
+
+Snoat måler trafikk **fra Caddys access-logg**, ikke fra et sporingsskript.
+
+### Hvorfor loggen og ikke JavaScript
+
+Første forsøk var Umami i egen container, med automatisk injisering av
+`<script>`-taggen i kundens kildekode før bygg. Den ble forkastet før den nådde
+produksjon, av fire grunner som alle er strukturelle:
+
+1. **Den samlet aldri data.** Den globale CORS-middlewaren låste origin til
+   dashboardet, så nettleserens preflight mot `/api/send` feilet for hvert
+   eneste treff fra en kundeapp.
+2. **Injeksjonen dekket bare halve økosystemet.** `index.html` og `layout.tsx`
+   traff Vite og Next.js, men ikke Remix, Astro, Nuxt eller noe som ikke er
+   JavaScript – og en `String.replace("</head>")` kan treffe en streng eller en
+   kommentar og gjøre kundens bygg til en syntaksfeil i kode de ikke har skrevet.
+3. **Sprengradius.** Umami-containeren holdt superbruker-credentials til hele
+   Supabase-databasen og tok samtidig imot ubetrodde payloads fra åpent
+   internett.
+4. **Feil lag.** En PaaS eier proxyen for alle kundedomener. Det er et
+   strukturelt fortrinn ingen frittstående analyseleverandør har, og det er
+   grunnen til at Netlify Analytics og Cloudflare Web Analytics er bygget på
+   samme måte.
+
+### Arkitektur
+
+Caddy strømmer access-loggen som JSON-linjer over docker-nettet til
+`backend:3100`. En `filter`-encoder sletter `Cookie` og `Authorization` før noe
+forlater Caddy, og loggen skrives aldri til disk.
+
+`services/analytics-ingest.ts` slår opp vertsnavn → prosjekt, hasher IP-en bort
+med et dagsroterende salt som kun finnes i minnet, tolker user-agent, slår opp
+land lokalt, og aggregerer i fem sekunder før den skriver. En app med 300 000
+treff i timen blir én rad, ikke 300 000.
+
+### Datamodell (`analytics`-skjemaet, migrasjon 0008)
+
+| Tabell | Innhold | Levetid |
+|---|---|---|
+| `rollup_hourly` | Sidevisninger, besøk, forespørsler, bytes, 4xx/5xx, responstid, bot-treff | 400 dager |
+| `visitors_daily` | Anonymiserte besøkende-hasher | 90 dager |
+| `rollup_dim` | Toppsider, henvisere, nettlesere, OS, enheter, land | 400 dager |
+
+Rå treff lagres ikke. `analytics_prune()` kutter i tillegg halen i `rollup_dim`
+til topp 200 per dag, slik at en portscannet app ikke kan blåse opp tabellen.
+
+### Funksjonalitet
+* **Null oppsett.** Ingen kode i kundens prosjekt, ingen `website_id`, ingen
+  redeploy. Apper som allerede kjører får statistikk umiddelbart.
+* **Virker overalt.** Alle rammeverk og språk, inkludert rene API-er og
+  statiske sider. Kan ikke blokkeres av adblockere, og IP-en kan ikke forfalskes
+  med en header fordi den kommer fra TCP-koblingen på kanten.
+* **Statistikk-fane (`<AnalyticsTab />`)** – ett API-kall dekker hele fanen:
+  * Nøkkeltall: unike besøkende, sidevisninger, visninger per besøk, responstid.
+  * Driftstall loggen gir gratis: forespørsler, båndbredde, 5xx-rate, robottrafikk.
+  * Tidsfilter 24t / 7d / 30d / hittil i år / alt, med oppløsning utledet av
+    vinduets lengde. «Alt» starter på prosjektets `created_at`.
+  * Graf over sidevisninger og besøk, med tomme bøtter fylt inn.
+  * Dimensjoner: toppsider, trafikkilder, nettlesere, enheter og land. Alle
+    kommer i samme svar, så fanebytte koster ingen nettverkstrafikk.
+
+### Kjent begrensning
+
+Klientruting i en SPA gir **én loggført sidevisning per økt** – Caddy ser ikke
+`pushState`. Loggen kan heller ikke måle tid på siden eller bounce. Skal det
+gapet lukkes, er neste steg et førsteparts endepunkt montert på kundens eget
+domene (`/_snoat/*` via Caddy-ruten), slik at sporingen blir same-origin uten
+CORS. Det er bevisst ikke bygget ennå.
+

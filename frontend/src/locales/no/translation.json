@@ -8,8 +8,8 @@
     "register": "Registrer deg"
   },
   "hero": {
-    "title": "Lynrask infrastruktur for Norske Webapper",
-    "description": "Deploy nettside på ett klikk — 100% GDPR-vennlig på norsk infrastruktur.",
+    "title": "Lynrask infrastruktur for moderne Webapper",
+    "description": "Deploy nettside på ett klikk. 100% GDPR-vennlig skyplattform bygget for fart og personvern.",
     "cta_go_to_projects": "Gå til prosjektene dine",
     "cta_register": "Registrer deg",
     "cta_security": "Les om sikkerhet"
@@ -17,46 +17,43 @@
   "features": {
     "data_sovereignty": {
       "title": "Datasuverenitet",
-      "body": "All data i Norge. 100% GDPR-compliant. Trygt, sikkert og lokalt."
+      "body": "All data forblir i Europa. 100% GDPR-vennlig. Det perfekte europeiske Vercel-alternativet for personvernfokuserte team."
     },
     "performance": {
       "title": "Lynrask ytelse",
-      "body": "Lokale servere gir lavere latens."
+      "body": "Optimaliserte edge-servere og aggressiv caching gir uslåelig global latens."
     },
     "security": {
       "title": "Sikkerhet først",
-      "body": "DDoS-beskyttelse og automatisk analyse."
+      "body": "Enterprise-gradert DDoS-beskyttelse og automatisk sårbarhetsanalyse innebygd."
     },
     "dx": {
       "title": "Utvikleropplevelse",
-      "body": "GitHub-integrasjon og Next.js-støtte."
+      "body": "Sømløs GitHub-integrasjon, umiddelbare previews og innebygd Next.js-støtte."
     },
     "backend": {
-      "title": "Trygg Backend",
-      "body": "Integrert selvhostet Supabase i Norge."
+      "title": "Sikker Infrastruktur",
+      "body": "Isolert og kryptert containerarkitektur bygget for moderne cybersikkerhetsbehov."
     }
   },
   "pricing": {
     "title": "Enkel prising",
-    "hobby": {
-      "title": "Hobby",
-      "price": "Gratis",
-      "description": "For testprosjekter og porteføljer.",
-      "cta": "Start gratis"
+    "free_price": "Gratis",
+    "per_month": "{{price}} / mnd",
+    "unavailable": "Vi får ikke hentet prislisten akkurat nå. Prøv igjen om litt.",
+    "vat_note_no": "Alle priser er eks. mva. Frostbyte Group AS fakturerer med norsk mva.",
+    "vat_note_eu": "Alle priser er eks. mva. Avgiften beregnes i kassen etter landet ditt. Bedrifter med gyldig mva-nummer faktureres uten mva.",
+    "free": {
+      "title": "Free",
+      "description": "For testprosjekter, porteføljer og statiske sider."
     },
-    "standard": {
-      "badge": "Mest populær",
-      "title": "Standard",
-      "price": "199 kr / mnd",
-      "description": "For profesjonelle og voksende prosjekter.",
-      "cta": "Kom i gang"
+    "pro": {
+      "title": "Pro",
+      "description": "For profesjonelle og voksende prosjekter."
     },
-    "enterprise": {
-      "badge": "For større bedrifter",
-      "title": "Enterprise",
-      "price": "Ta kontakt",
-      "description": "Skalerbar ytelse, tilpassede SLA-er og dedikert support.",
-      "cta": "Kontakt salg"
+    "business": {
+      "title": "Business",
+      "description": "Maksimal ytelse, prioritert byggekø og faktura."
     }
   },
   "footer": {
@@ -136,7 +133,9 @@
       "no_repos": "Ingen treff.",
       "grant_access": "Gi Snoat tilgang til flere repositorier",
       "private": "Privat"
-    }
+    },
+    "start": "Start",
+    "stopped": "Stoppet"
   },
   "dns": {
     "default_address": "Standard Snoat-adresse:",
@@ -207,6 +206,7 @@
   "project": {
     "tab_deployments": "Deployments",
     "tab_terminal": "Terminal",
+    "tab_analytics": "Statistikk",
     "tab_dns": "DNS",
     "tab_env": "Miljøvariabler",
     "tab_settings": "Innstillinger",
@@ -237,7 +237,27 @@
     "env_dropzone": "Dra og slipp .env-filen din her, eller klikk for å velge fil",
     "env_paste_placeholder": "API_KEY=secret_key_123\nDATABASE_URL=postgresql://...",
     "env_import_submit": "Importer {{count}} variabler",
-    "cancel": "Avbryt"
+    "cancel": "Avbryt",
+    "logout": "Logg ut",
+    "visit": "Besøk",
+    "no_logs_available": "Ingen logger tilgjengelig for dette prosjektet ennå.",
+    "env_vars_found": "{{count}} variabler funnet",
+    "env_vars_saved": "Miljøvariabler ble lagret.",
+    "env_vars_save_error": "Kunne ikke lagre miljøvariabler",
+    "env_vars_imported": "{{count}} variabler importert.",
+    "saving": "Lagrer…",
+    "settings_saved": "Innstillinger ble lagret.",
+    "settings_save_error": "Kunne ikke lagre innstillinger",
+    "delete_project_error": "Kunne ikke slette prosjektet",
+    "project_settings": "Prosjektinnstillinger",
+    "advanced_build_settings": "Avanserte byggeinnstillinger",
+    "static_output_dir": "Statisk output-katalog",
+    "static_output_dir_placeholder": "f.eks. dist — la stå tom for å kjøre som server",
+    "static_output_dir_help": "Produserer prosjektet bare filer, serverer Caddy dem direkte fra disk — ingen container kjører, og siden koster ingenting når ingen besøker den. Vite og Astro bygger til <code class=\"font-mono\">dist</code>, Next.js med <code class=\"font-mono\">output: 'export'</code> til <code class=\"font-mono\">out</code>. La feltet stå tomt for apper som trenger en server (vanlig Next.js, Express, API-er).",
+    "spa_fallback": "Klientruting (SPA)",
+    "spa_fallback_help": "Serverer <code class=\"font-mono\">index.html</code> for adresser som ikke finnes som fil, slik at dype lenker virker ved direkte innlasting. Skru på for React Router eller TanStack Router. La stå av for Astro, Hugo og Eleventy — de har sin egen 404-side.",
+    "delete_project_warning": "Sletting av prosjektet vil fjerne alle deployments og innstillinger permanent.",
+    "start_project": "Start på nytt"
   },
   "forgot": {
     "title": "Glemt passord",
@@ -255,5 +275,103 @@
     "btn_request_new": "Be om ny lenke",
     "error_weak_password": "Passordet er for svakt. Bruk minst 8 tegn med en blanding av bokstaver og tall.",
     "error_same_password": "Det nye passordet må være forskjellig fra det gamle."
+  },
+  "billing": {
+    "back": "Tilbake til prosjekter",
+    "title": "Abonnement",
+    "subtitle": "Planen din, forbruket ditt og betalingsdetaljene dine.",
+    "loading": "Henter abonnementet …",
+    "plans": "Planer",
+    "current_plan": "Nåværende plan",
+    "current": "Nåværende",
+    "current_hint": "Dette er planen du står på nå.",
+    "plan_free": "Free",
+    "plan_pro": "Pro",
+    "plan_business": "Business",
+    "per_month": "/ mnd eks. mva",
+    "free_price": "Gratis",
+    "incl_vat": "{{price}} inkl. mva",
+    "upgrade": "Oppgrader",
+    "opening": "Åpner …",
+    "manage": "Administrer abonnement",
+    "not_purchasable": "Denne planen kan ikke kjøpes ennå.",
+    "downgrade_hint": "Si opp i kundeportalen for å gå tilbake til Free.",
+    "stripe_missing": "Betaling er ikke satt opp på denne installasjonen ennå. Alle kontoer kjører på Free-grensene.",
+    "checkout_ok": "Takk! Betalingen er mottatt. Planen oppdateres så snart Stripe har bekreftet den – det tar vanligvis noen sekunder.",
+    "checkout_canceled": "Kjøpet ble avbrutt. Du står fortsatt på planen du hadde.",
+    "usage_apps": "Apper som kjører",
+    "usage_apps_hint": "Dynamiske apper i drift akkurat nå. Statiske sider teller ikke.",
+    "usage_build_minutes": "Byggeminutter",
+    "usage_build_minutes_hint": "Brukt denne kalendermåneden. Nullstilles den 1.",
+    "usage_static_one": "Du har 1 statisk side. Statiske sider er ubegrenset på alle planer – de kjører ingen container.",
+    "usage_static_other": "Du har {{count}} statiske sider. De er ubegrenset på alle planer – de kjører ingen container.",
+    "feature_apps_one": "1 app samtidig",
+    "feature_apps_other": "{{count}} apper samtidig",
+    "feature_memory": "{{mb}} MB RAM og {{cpus}} vCPU per app",
+    "feature_build_minutes": "{{minutes}} byggeminutter i måneden",
+    "feature_static": "Ubegrenset statiske sider",
+    "feature_priority": "Prioritert byggekø",
+    "feature_ehf": "EHF-faktura på forespørsel",
+    "payment_failed_title": "Betalingen gikk ikke gjennom",
+    "grace_body": "Vi fikk ikke trukket kortet for {{plan}}. Alt kjører som før fram til {{date}} mens vi prøver igjen. Oppdaterer du betalingsmåten før den datoen, merker du ingenting.",
+    "downgraded_body": "Vi fikk ikke trukket kortet for {{plan}}, og fristen er ute. Kontoen kjører nå på Free-grensene. Appene og dataene dine er urørt – oppdater betalingsmåten, så er alt tilbake med én ny deployment.",
+    "fix_payment": "Oppdater betalingsmåte",
+    "renews_on": "Fornyes {{date}}",
+    "cancels_on": "Aktiv til {{date}}, deretter Free",
+    "invoiced": "Faktureres på EHF utenom Stripe.",
+    "vat_at_checkout": "Mva beregnes i kassen etter landet ditt.",
+    "vat_note_no": "Alle priser er i norske kroner og eks. mva. Frostbyte Group AS fakturerer med norsk mva.",
+    "vat_note_eu": "Alle priser er i euro og eks. mva. Avgiften beregnes i kassen etter landet ditt – bedrifter med gyldig mva-nummer faktureres uten mva.",
+    "currency_locked": "Abonnementet ditt faktureres i {{currency}}. Valutaen ble satt da du kjøpte planen og kan ikke endres, heller ikke ved å bytte språk.",
+    "invoice_ehf_title": "EHF-faktura for bedrifter",
+    "invoice_ehf_body": "Norske bedrifter og offentlig sektor kan få Business-planen på EHF-faktura med organisasjonsnummer i stedet for kort. Ta kontakt på post@frostbytes.no, så setter vi det opp manuelt.",
+    "invoice_email_title": "Faktura for bedrifter",
+    "invoice_email_body": "Bedrifter kan få Business-planen på faktura i stedet for kort. Oppgir du mva-nummeret ditt i kassen, faktureres du uten mva. Ta kontakt på post@frostbytes.no."
+  },
+  "project_plan": {
+    "section_label": "ABONNEMENT & YTELSE",
+    "current_plan_title": "Plan for dette prosjektet",
+    "active": "Aktiv",
+    "change": "Endre",
+    "upgrade": "Oppgrader",
+    "loading": "Laster...",
+    "per_month": "/ mnd",
+    "checkout_success": "Takk! Betalingen er registrert. Prosjektplanen oppdateres så snart Stripe bekrefter den.",
+    "checkout_canceled": "Betalingen ble avbrutt. Prosjektet står fortsatt på {{plan}}-planen.",
+    "free_desc": "For hobbyprosjekter og personlige nettsider (ikke-kommersiell bruk).",
+    "free_f1": "Standard byggekø",
+    "free_f2": "Snoat-subdomene (*.snoat.com)",
+    "free_f3": "Inkludert statistikk & analysetall",
+    "free_f4": "Kun for ikke-kommersiell bruk",
+    "pro_desc": "For kommersielle prosjekter, bedrifter og profesjonelle nettsider.",
+    "pro_f1": "Eget domene (dittdomene.no)",
+    "pro_f2": "Prioritert byggekø & raskere deploys",
+    "pro_f3": "Høyere ytelse for produksjonstrafikk",
+    "pro_f4": "Inkludert statistikk",
+    "business_desc": "For spesielt store prosjekter med mer enn ti tusen besøkende per måned.",
+    "business_f1": "Skreddersydd kapasitet & dedikerte ressurser",
+    "business_f2": "Prioritert support & direkte oppfølging",
+    "business_f3": "Faktura / EHF med organisasjonsnummer",
+    "business_f4": "SLA og garantert oppetid",
+    "contact_price": "Skreddersydd",
+    "contact_us": "Kontakt oss",
+    "gated_dns_title": "Eget domene krever Pro- eller Business-plan",
+    "gated_dns_desc": "Oppgrader dette prosjektet for å koble til eget domene (f.eks. dittdomene.no) og få tilgang til statistikk.",
+    "free_price": "Gratis"
+  },
+  "errors": {
+    "unknown": "Noe gikk galt. Prøv igjen.",
+    "auth": {
+      "signed_out": "Du er ikke logget inn."
+    },
+    "plan": {
+      "build_minutes_exhausted": "Du har brukt {{used}} av {{limit}} byggeminutter denne måneden. Kvoten nullstilles den 1. – oppgrader planen for å bygge mer nå.",
+      "apps_limit_reached": "Planen din tillater {{limit}} apper samtidig, og du har {{running}} som kjører. Oppgrader planen, eller stopp en app du ikke bruker.",
+      "apps_limit_reached_downgraded": "Betalingen har feilet, så kontoen kjører på gratisgrensene: {{limit}} apper samtidig, og du har {{running}} som kjører. Oppdater betalingsmåten, så er alt tilbake."
+    },
+    "deploy": {
+      "already_building": "Prosjektet bygges allerede. Vent til det kjørende bygget er ferdig.",
+      "building_now": "Prosjektet bygges akkurat nå. Vent til bygget er ferdig."
+    }
   }
 }

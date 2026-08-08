@@ -324,6 +324,14 @@ services:
       SUPABASE_ANON_KEY: ${ANON_KEY}
 
       CADDY_ADMIN_URL: ${CADDY_ADMIN_URL:-http://caddy:2019}
+      # Trafikkanalyse. Caddy strømmer access-loggen til INGEST_PORT over
+      # snoat-nettverket – porten skal aldri publiseres på verten.
+      SNOAT_ANALYTICS_INGEST_PORT: ${SNOAT_ANALYTICS_INGEST_PORT:-3100}
+      SNOAT_ANALYTICS_FLUSH_MS: ${SNOAT_ANALYTICS_FLUSH_MS:-5000}
+      SNOAT_ANALYTICS_TIMEZONE: ${SNOAT_ANALYTICS_TIMEZONE:-Europe/Oslo}
+      SNOAT_ANALYTICS_VISITOR_RETENTION_DAYS: ${SNOAT_ANALYTICS_VISITOR_RETENTION_DAYS:-90}
+      SNOAT_ANALYTICS_ROLLUP_RETENTION_DAYS: ${SNOAT_ANALYTICS_ROLLUP_RETENTION_DAYS:-400}
+      SNOAT_GEOIP_DB_PATH: ${SNOAT_GEOIP_DB_PATH:-}
       SNOAT_APP_DOMAIN_SUFFIX: ${SNOAT_APP_DOMAIN_SUFFIX:-.snoat.localhost}
       SNOAT_APPS_NETWORK: ${SNOAT_APPS_NETWORK:-snoat_apps}
       SNOAT_FRONTEND_ORIGIN: ${SNOAT_FRONTEND_ORIGIN:-http://localhost:8080}
@@ -349,6 +357,21 @@ services:
       # Signaturen på webhooks (automatisk deploy ved push). Uten den tas
       # webhooks imot uverifisert – se CONTEXT_FOR_AI/08_security_model.md.
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+
+      # Stripe – abonnement og betaling. Valgfri; uten STRIPE_SECRET_KEY kjører
+      # alle kontoer på Free-grensene og kjøpsknappene skjules.
+      #
+      # ⚠️ STRIPE_WEBHOOK_SECRET er *ikke* valgfri på samme måte som
+      # GITHUB_WEBHOOK_SECRET: er den tom, avvises alle Stripe-webhooks med 503.
+      # En uverifisert betalingswebhook kan gi hvem som helst Business-planen.
+      # Se CONTEXT_FOR_AI/12_billing_and_plans.md.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_PRO: ${STRIPE_PRICE_PRO:-}
+      STRIPE_PRICE_BUSINESS: ${STRIPE_PRICE_BUSINESS:-}
+      STRIPE_AUTOMATIC_TAX: ${STRIPE_AUTOMATIC_TAX:-false}
+      SNOAT_BILLING_GRACE_DAYS: ${SNOAT_BILLING_GRACE_DAYS:-14}
+      SNOAT_BILLING_SUSPEND_ENABLED: ${SNOAT_BILLING_SUSPEND_ENABLED:-false}
     volumes:
       # Backend styrer Docker-daemonen på hosten (Dockerode + nixpacks).
       # Docker Desktop legger ikke alltid socketen på /var/run/docker.sock –

@@ -17,10 +17,11 @@ tilbake, ikke bare utløpte.
 
 Frontend henter tokenet fra sesjonen i `frontend/src/lib/api.ts`.
 
-**Ett unntak:** `POST /api/webhooks/github` ligger under `/api`, men utenfor
-`requireAuth` – GitHub har ingen Supabase-sesjon. Den er signaturverifisert i
-stedet, og monteres før `api` i `index.ts` for å komme foran middlewaren. Er du i
-tvil om en rute er beskyttet, er registreringsrekkefølgen i `index.ts` svaret.
+**To unntak:** `POST /api/webhooks/github` og `POST /api/webhooks/stripe` ligger
+under `/api`, men utenfor `requireAuth` – hverken GitHub eller Stripe har en
+Supabase-sesjon. Begge er signaturverifisert i stedet, og monteres før `api` i
+`index.ts` for å komme foran middlewaren. Er du i tvil om en rute er beskyttet,
+er registreringsrekkefølgen i `index.ts` svaret.
 
 **CORS:** kun `SNOAT_FRONTEND_ORIGIN` slipper til (kommaseparert liste støttes).
 Webhooken bryr seg ikke – GitHub sender ingen `Origin`-header, og CORS er en
@@ -60,17 +61,33 @@ videre i bakgrunnen, og klienten følger den via Supabase Realtime.
 | --- | --- |
 | 202 | Deployment opprettet og startet |
 | 401 | Mangler eller ugyldig token |
+| **402** | **En plangrense er nådd** – for mange apper i drift, eller byggeminuttene er brukt opp |
 | 404 | Prosjektet finnes ikke, eller tilhører noen andre |
 | 409 | Prosjektet bygges allerede |
 
+402 og 409 er bevisst forskjellige: 409 sier «prøv igjen om litt», 402 sier «dette
+koster penger». Dashboardet skiller på koden for å vise oppgraderingsknappen.
+Grensene håndheves i `startDeployment()` slik at også auto-deploy fra webhooken
+går gjennom dem – se `12_billing_and_plans.md`.
+
 ### `POST /api/projects/:projectId/stop`
 
-Fjerner Caddy-ruten og stopper **alle** containere prosjektet har. Prosjektet og
-historikken beholdes.
+Fjerner Caddy-ruten og stopper **alle** containere prosjektet har, og setter
+`projects.stopped_at`. Prosjektet og historikken beholdes.
 
 ```json
 { "stopped": true }
 ```
+
+`stopped_at` er ikke en detalj: den er det eneste dashboardet kan se. Statusen
+der utledes ellers av `deployments.status`, og et stopp rører ingen deployment –
+uten kolonnen sto siden igjen og sa «Live» om en app som var borte. Den skrives
+**etter** at containeren faktisk er fjernet, og en feilet skriving logges uten å
+velte svaret: appen *er* nede, det er bare dashboardet som ikke fikk vite det.
+
+Neste `POST /deploy` nullstiller feltet, og frigjør samtidig plassen appen la
+beslag på i plangrensen – en Free-bruker som stopper én app kan altså starte en
+annen med en gang (`12_billing_and_plans.md`).
 
 Flertallsformen er ikke pedanteri: siden utrullingen er rullerende, kan et
 prosjekt ha mer enn én container samtidig – normalt i noen sekunder midt i en
@@ -91,6 +108,42 @@ Status og logger for én deployment.
 
 Finnes for skript og feilsøking. **Dashboardet bruker Realtime i stedet** – ikke
 poll dette endepunktet i UI-kode.
+
+### `GET /api/projects/:projectId/analytics`
+
+Hele statistikkfanen i ett kall.
+
+Spørreparametere: `from` og `to` i millisekunder, og `unit` (`hour` | `day` |
+`month`). Alle er valgfrie og **klamres i backend** – et omvendt intervall
+snus, en NaN får en standardverdi, og vinduet kappes til 400 dager. Uten det
+kunne en bruker be om ti år i timesoppløsning og legge ned databasen
+plattformen deler med alt annet.
+
+```json
+{
+  "totals": { "pageviews": 1240, "visits": 380, "requests": 9800,
+              "bytes_out": 41203441, "errors_4xx": 12, "errors_5xx": 0,
+              "bot_requests": 210, "avg_duration_ms": 34 },
+  "visitors": 352,
+  "series": [{ "t": "2026-08-06T22:00:00+00:00", "pageviews": 84,
+               "visits": 31, "requests": 640, "errors": 0 }],
+  "dims": { "path": [{ "value": "/", "hits": 512 }], "referrer": [ … ] },
+  "unit": "day"
+}
+```
+
+Tallene kommer fra Caddys access-logg, ikke fra et sporingsskript – se
+`services/analytics-ingest.ts`. Det finnes derfor **ingen** endepunkter for å
+registrere et prosjekt for måling eller hente en sporingskode; det er ingenting
+å sette opp.
+
+`series` har en bøtte per intervall også der det ikke var trafikk, slik at en
+stille uke ikke tegnes som en tettpakket uke med lave tall. `dims` inneholder
+alle dimensjonene samtidig, så fanebytte i UI-et koster ingen nettverkstrafikk.
+
+Feiler databasen, svarer endepunktet **200 med nullverdier**, ikke 5xx.
+Statistikk er dashboardets minst kritiske fane og skal ikke gi kunden en
+feilside.
 
 ### `GET /api/github/status`
 
@@ -122,6 +175,97 @@ foreldede raden vår og listen bygges videre fra de øvrige installasjonene –
 én død kobling skal ikke ta ned hele velgeren.
 
 Svarer `503` når App-en ikke er konfigurert.
+
+### `GET /api/pricing?market=no|eu`
+
+**Offentlig – utenfor `requireAuth`.** Plankatalogen landingssiden viser til folk
+uten konto. Samme katalogfunksjon som `/api/billing`, slik at prissiden og
+dashboardet ikke kan komme i utakt.
+
+⚠️ Montert **før** `app.route("/api", api)` i `index.ts`, av samme grunn som
+webhookene. Flyttes linjen ned, får landingssiden 401.
+
+```json
+{
+  "market": { "id": "eu", "currency": "eur", "locale": "en-IE", "displayVatRate": null, "invoiceChannel": "email" },
+  "plans": [{ "id": "pro", "price": 1900, "priceIncludingVat": null, "currency": "eur", "purchasable": true, "limits": {} }]
+}
+```
+
+### `GET /api/billing?market=no|eu`
+
+Alt betalingssiden trenger: gjeldende plan, status, grenser, forbruk og
+plankatalogen med priser. Katalogen kommer fra backend fordi det er backend som
+håndhever grensene – står de to stedene, sier prissiden og virkeligheten før
+eller siden ulike ting.
+
+```json
+{
+  "plan": "pro",
+  "billedPlan": "pro",
+  "status": "active",
+  "downgraded": false,
+  "graceEndsAt": null,
+  "currentPeriodEnd": "2026-09-01T00:00:00.000Z",
+  "limits": { "maxRunningProjects": 5, "memoryMb": 1024, "cpus": 1, "buildMinutesPerMonth": 500, "queuePriority": 10 },
+  "usage": { "runningProjects": 2, "totalProjects": 4, "staticProjects": 1, "buildMinutesUsed": 37 },
+  "plans": [{ "id": "pro", "price": 19900, "priceIncludingVat": 24875, "currency": "nok", "purchasable": true, "limits": {} }],
+  "market": { "id": "no", "currency": "nok", "locale": "nb-NO", "displayVatRate": 0.25, "invoiceChannel": "ehf" },
+  "marketLocked": true,
+  "billingCountry": "NO",
+  "stripeConfigured": true,
+  "portalAvailable": true
+}
+```
+
+`plan` er den **effektive** planen (den grensene regnes ut fra), `billedPlan` er
+den kunden betaler for. De er ulike bare når en betaling har feilet og
+nådefristen er utløpt.
+
+⚠️ `market`-parameteren er et **ønske**, ikke en beslutning. Har kunden et
+abonnement, er valutaen låst hos Stripe, og svaret kommer i den valutaen med
+`marketLocked: true` – uansett hva klienten ba om. `price` er i **minste enhet**
+av `currency` (øre eller cent), og `priceIncludingVat` er null når satsen
+avhenger av kundeland. Se `12_billing_and_plans.md`.
+
+### `POST /api/billing/checkout`
+
+Oppretter en Stripe Checkout-sesjon. Body:
+`{ "plan": "pro" | "business", "market": "no" | "eu", "projectId"?: string }`.
+Svarer `{ "url": "https://checkout.stripe.com/…" }`.
+
+Planen settes **ikke** her – kun av webhooken når betalingen er bekreftet. Ellers
+ville en kunde som lukket fanen i kassen fått Pro gratis.
+
+| Kode | Betydning |
+| --- | --- |
+| 200 | Sesjon opprettet |
+| 400 | Ukjent plan |
+| 503 | Stripe eller price-ID-en er ikke konfigurert |
+| 502 | Stripe svarte med en feil |
+
+### `POST /api/billing/portal`
+
+Lenke til Stripes kundeportal, der kunden bytter kort, laster ned kvitteringer og
+sier opp selv. Svarer `{ "url": … }`, eller 404 hvis kunden ikke finnes i Stripe.
+
+### `POST /api/webhooks/stripe`
+
+**Utenfor `requireAuth`, selv om den ligger under `/api`** – samme mekanikk som
+GitHub-webhooken, og montert før `/api` i `index.ts` av samme grunn.
+
+⚠️ **Forskjellen fra GitHub-webhooken:** er `STRIPE_WEBHOOK_SECRET` tom, avvises
+alt med **503**. GitHub-varianten tar imot uverifisert med en advarsel, fordi det
+verste som skjer er et uønsket bygg. Her er det verste at hvem som helst kan
+POST-e seg til Business-planen.
+
+| Kode | Betydning |
+| --- | --- |
+| 200 | Behandlet, ignorert, eller en duplikatlevering |
+| 401 | Signaturen stemmer ikke, eller mangler |
+| 413 | Body over 1 MB |
+| 500 | Kunne ikke lagre – Stripe prøver igjen (låsen frigis først) |
+| 503 | Stripe er ikke konfigurert på denne installasjonen |
 
 ### `POST /api/webhooks/github`
 
@@ -176,7 +320,25 @@ Alle feil svarer med samme form:
 { "error": "Prosjektet bygges allerede. Vent til den kjørende buildet er ferdig." }
 ```
 
-Meldingene er på norsk og ment å vises direkte til brukeren.
+Meldingene er på **norsk og ment for loggen**, ikke for et flerspråklig
+dashboard. Feil som skal vises til kunden bærer i tillegg en maskinlesbar kode:
+
+```json
+{
+  "error": "Du har brukt 100 av 100 byggeminutter denne måneden. …",
+  "code": "plan.build_minutes_exhausted",
+  "params": { "used": 100, "limit": 100 }
+}
+```
+
+Frontend slår opp `code` i `errors`-seksjonen av oversettelsene og interpolerer
+`params`. Grunnen til at backend ikke skriver ferdig kundetekst er at den **ikke
+kjenner visningsspråket** – en auto-deploy fra en GitHub-push har ingen bruker i
+den andre enden i det hele tatt.
+
+**Bare feil som er ment for kunden har kode.** En byggefeil fra Nixpacks er
+diagnostikk blandet med verktøy-output, og frontend faller da tilbake på
+`error`-teksten. Kodene som finnes står i `12_billing_and_plans.md`.
 
 ## Ikke implementert
 

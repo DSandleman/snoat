@@ -7,7 +7,7 @@ Prosjektet er bygget som et monorepo delt i to hovedkomponenter: `/frontend` og 
 - **Frontend:** TanStack Start (React 19, Vite, TypeScript, Tailwind CSS v4). Håndterer landingssiden, brukerautentisering og applikasjonens dashboard ("Mine Prosjekter"). Rutene er filbaserte under `frontend/src/routes/`, og sesjonen håndteres klient-side av `@supabase/supabase-js` (PKCE-flyt mot GitHub OAuth).
 - **Backend:** Node.js med TypeScript og Hono. Fungerer som selve bygge-motoren og API-laget for plattformen. Holder ingen egen database – all tilstand ligger i Supabase.
 - **Database og Autentisering:** Selvhostet Supabase. Kjøres lokalt via Docker Compose i utviklingsmiljøet, og sikrer at all auth (GitHub OAuth) og relasjonsdata holdes internt.
-- **Trafikkanalyse:** Lettvekts, open-source analyseverktøy (Umami eller Plausible) integreres for å gi brukerne trafikkinnsikt ut av boksen uten å kompromittere personvernet. *Ikke implementert ennå.*
+- **Trafikkanalyse:** Førsteparts og logg-basert. Caddy eier proxy-laget for alle kundedomener, så hver forespørsel til hver app passerer oss allerede. Access-loggen strømmes over docker-nettet til backend, som beriker den, kaster IP-en og skriver ferdige aggregater til `analytics`-skjemaet i Supabase Postgres. Ingen sporingskode injiseres i kundens prosjekt, og ingen tredjepartstjeneste er involvert. Dashboardet har en «Statistikk»-fane med nøkkeltall, graf, toppsider, trafikkilder – og fordi kilden er en serverlogg: responstid, feilrate og båndbredde.
 
 ## Backend-moduler og Infrastruktur
 
@@ -28,6 +28,7 @@ GoTrue ──────▶ mail-templates :80  (henter e-postmaler over HTTP, 
        ──────▶ smtp.resend.com     (bekreftelse- og gjenopprettingse-post)
 
 GitHub ──────▶ Caddy :80 ───▶ backend  (POST /api/webhooks/github ved push)
+Stripe ──────▶ Caddy :80 ───▶ backend  (POST /api/webhooks/stripe ved abonnementsendring)
 
 backend ──▶ Docker-daemon   (nixpacks build, dockerode run)
         ──▶ Caddy admin-API (ruter opprettes etter vellykket build)
@@ -70,6 +71,12 @@ Docker-nettverkene er delt i to:
 | `lib/redact.ts` | Fjerner credentials fra alt som havner i byggeloggen. |
 | `routes/github.ts` | Repo-velgeren + installasjonsflyten. |
 | `routes/webhooks.ts` | Webhook-mottak fra GitHub: deploy ved push. Offentlig, signaturverifisert. |
+| `routes/stripe.ts` | Webhook-mottak fra Stripe: abonnement opprettet, fornyet, feilet, avsluttet. Offentlig, signaturverifisert. Avviser alt uten secret. |
+| `routes/billing.ts` | Plan, forbruk, Checkout og kundeportal for dashboardet. |
+| `services/plans.ts` | `PLAN_LIMITS` – den eneste definisjonen av hva en plan gir. Regner ut rettigheter, forbruk og sperren `assertCanDeploy()`. |
+| `services/billing.ts` | Skriver abonnementstilstand fra Stripe-objekter. Idempotenslåsen for webhooks. |
+| `services/suspension.ts` | Timesveip som stopper apper over gratisgrensen når nådefristen er ute. Av som standard. |
+| `lib/stripe.ts` | Lat Stripe-klient, plangjenkjenning og signaturverifisering. |
 | `lib/docker.ts` | Delt Dockerode-klient + apps-nettverket. |
 | `lib/supabase.ts` | service-role-klient. |
 | `lib/logger.ts` | pino. |
@@ -85,6 +92,7 @@ Docker-nettverkene er delt i to:
 | `routes/reset-password.tsx` | Setter nytt passord fra lenken i e-posten. Håndterer både `?code=` (PKCE) og `#access_token` (implicit). |
 | `routes/dashboard.tsx` | «Mine prosjekter», deploy-trigger, nytt prosjekt. |
 | `routes/projects.$projectId.tsx` | Prosjektvisningen med fanene Deployments, Terminal, DNS, Miljøvariabler og Innstillinger. |
+| `routes/settings.billing.tsx` | Abonnement: plan, forbruksmålere, kjøp og kundeportal. Se `12_billing_and_plans.md`. |
 | `components/DeploymentLogsDialog.tsx` | Live byggelogg over Realtime. |
 | `components/DeploymentStatusBadge.tsx` | Statusprikk (Live / Bygger / Feilet …). |
 | `components/DnsSettingsTab.tsx` | DNS-fanen: records, kopiknapper og leverandørveiledning. |
@@ -142,7 +150,7 @@ kaster under SSR på Node < 22. Se `07_local_development.md`.
 i **registreringsrekkefølge**, og den første som svarer stopper kjeden. `api`
 legger `requireAuth` på `/api/*`, så et offentlig endepunkt under `/api` må
 registreres *før* `app.route("/api", api)` for å slippe unna auth – det er slik
-`/api/webhooks/github` fungerer. Konsekvensen er at en tilsynelatende uskyldig
+`/api/webhooks/github`, `/api/webhooks/stripe` og `/api/pricing` fungerer. Konsekvensen er at en tilsynelatende uskyldig
 ombytting av to `app.route()`-linjer i `index.ts` gjør webhooken utilgjengelig
 (401) eller, i motsatt retning, kan eksponere et endepunkt som skulle vært
 beskyttet. Begge sider er kommentert i koden.

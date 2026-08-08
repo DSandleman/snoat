@@ -27,7 +27,22 @@ Hvert repository som er koblet til plattformen.
   - `build_command` (valgfri override)
   - `env_vars` (JSONB for `.env`)
   - `github_installation_id` (valgfri, se under)
+  - `stopped_at` (når brukeren slo av appen; NULL = kjører)
   - `created_at`
+
+`stopped_at` (migrasjon 0005) er den **synlige** tilstanden til et stoppet
+prosjekt. Før den fantes, skrev `POST /api/projects/:id/stop` ingenting til
+databasen: den fjernet Caddy-ruten og containerne, men alt dashboardet tegner –
+statusprikken, live-URL-en og om stopp-knappen vises – utledes av
+`deployments.status`, som fortsatt sier `success` etter en stopp. Et vellykket
+stopp så derfor ut som om ingenting skjedde.
+
+Containeren kan ikke være kilden til den tilstanden: frontend snakker med
+Supabase, ikke med Docker, og «stoppet av brukeren» er noe annet enn «ingen
+container kjører akkurat nå» – det siste er også sant midt i en deployment.
+
+Feltet nullstilles av `startDeployment()`, ikke ved vellykket build, slik at
+dashboardet slutter å si «Stoppet» i samme øyeblikk byggingen starter.
 
 `name` er subdomenet applikasjonen blir live på, og valideres derfor mot
 `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` i databasen. Kombinasjonen
@@ -78,10 +93,67 @@ En historikk over hver gang et prosjekt bygges.
   - `url` (slutt-URL for deploymenten)
   - `created_at`
 
+  - `duration_ms` (hvor lenge bygget kjørte)
+
 `status` er en Postgres-enum (`public.deployment_status`). `logs` skrives som ren
 tekst av backend, som holder hele loggen i minnet og skriver den komplette
 teksten ved hver flush – det gjør skrivingen idempotent og hindrer at to
 samtidige flush-er mister linjer.
+
+`duration_ms` (migrasjon 0004) er grunnlaget for kvoten på byggeminutter. Den
+skrives i **både** suksess- og feilgrenen av pipelinen: et bygg som feiler etter
+ti minutter har brukt ti minutter av verten. NULL betyr at bygget pågår, eller at
+raden er fra før 0004.
+
+## subscriptions
+
+Abonnementet til én bruker. Se `12_billing_and_plans.md` for hele modellen.
+
+- **Kolonner:**
+  - `user_id` (PK, FK -> `profiles`)
+  - `plan` (`free`, `pro`, `business` – enum `public.subscription_tier`)
+  - `status` (enum `public.subscription_status`)
+  - `source` (`stripe` eller `invoice`)
+  - `stripe_customer_id`, `stripe_subscription_id`
+  - `current_period_end`, `delinquent_since`, `cancel_at_period_end`
+  - `currency` (0009) – ISO-4217 lowercase. **Låst etter første faktura**:
+    Stripe knytter valutaen til kunden, ikke til abonnementet, så den kan ikke
+    byttes uten en ny Stripe-kunde. Er den satt, overstyrer den visningsspråket
+    når backend velger prisliste.
+  - `billing_country` (0009) – ISO-3166-1 alpha-2 fra adressen i Stripe.
+    Avgiftsgrunnlaget. Ikke utledet av språk eller valuta – en kunde kan betale i
+    euro og holde til i Norge.
+  - `customer_kind` (0009) – `individual` eller `business`, avledet av om kunden
+    oppga mva-nummer i kassen. Avgjør omvendt avgiftsplikt i EU.
+  - `created_at`, `updated_at`
+
+De tre markedskolonnene er `text` med regex-sjekk og ikke enum, med vilje: dette
+er data vi henter fra Stripe, ikke tilstander vi selv kontrollerer. En enum måtte
+fått en migrasjon for hvert nye marked, og ville feilet skrivingen fra webhooken
+– altså midt i en betaling – hvis Stripe sendte noe vi ikke hadde forutsett.
+
+**⚠️ Dette er en egen tabell og ikke kolonner på `profiles`, av én grunn:**
+`profiles` har `profiles_update_own`, og RLS i Postgres er rad-nivå, ikke
+kolonne-nivå. Lå `plan` der, kunne enhver bruker kjørt
+`update profiles set plan = 'business'` fra nettleseren mot sin egen rad og gitt
+seg selv Business gratis. Se policy-tabellen under.
+
+Det samme gjelder `currency`: kunne en bruker satt den selv, kunne hen valgt
+hvilken prisliste kontoen skulle måles mot – og siden en lagret valuta overstyrer
+alt annet, ville løgnen overlevd helt fram til kassen.
+
+Triggeren `on_profile_created` gir hver ny profil en `free`-rad. At raden alltid
+finnes er tryggere enn å la backend håndtere «finnes ikke» – det tilfellet ville
+fort blitt tolket som «ingen grenser» av en framtidig endring.
+
+## stripe_events
+
+Idempotensnøkler for Stripe-webhooks: `id` (Stripe sin event-id, PK), `type`,
+`received_at`. Stripe leverer «at least once», og innsettingen i denne tabellen
+er låsen som hindrer at samme event behandles to ganger.
+
+RLS er på **uten en eneste policy**: `authenticated` og `anon` kommer ikke til,
+service_role omgår RLS. Dette er backend-intern tilstand og angår ingen bruker.
 
 ## Row Level Security
 
@@ -93,6 +165,8 @@ RLS er på for alle tabellene. Policyene er eier-scopet:
 | `projects` | Bruker har full tilgang til egne prosjekter (`for all`). |
 | `deployments` | Bruker kan **lese** deployments for egne prosjekter. Skriving skjer kun fra backend. |
 | `github_installations` | Bruker kan **kun lese** egne koblinger. Skriving skjer kun fra backend, etter at GitHub har bekreftet installasjonen – en klient som kunne skrive her, kunne knyttet seg til en annens repoer. |
+| `subscriptions` | Bruker kan **kun lese** sin egen rad. Det finnes bevisst ingen update-policy: planen settes utelukkende av backend etter en verifisert Stripe-signatur. |
+| `stripe_events` | Ingen policyer i det hele tatt. Kun service_role. |
 
 Backend bruker service-role-nøkkelen og **omgår RLS**. Derfor må den verifisere
 eierskap selv – det gjør `loadOwnedProject()` i `backend/src/middleware/auth.ts`.
@@ -106,6 +180,41 @@ Frontend filtrerer aldri på `user_id` i spørringene sine – det gjør databas
 `deployments` er lagt til publikasjonen `supabase_realtime` og har
 `replica identity full`, slik at dashboardet kan filtrere på `id` ved UPDATE.
 Dette er kanalen byggestatus og live logger går over; frontend poller ikke.
+
+## analytics (eget skjema)
+
+Trafikkstatistikken ligger i skjemaet `analytics`, ikke i `public`. Det er et
+bevisst valg: PostgREST eksponerer kun `public`, så tabellene er ikke nåbare fra
+nettleseren uansett hvordan RLS måtte bli konfigurert senere. RLS er likevel
+slått på uten policyer (= alle nektes), og de eneste veiene inn er tre
+`security definer`-funksjoner i `public` som kun `service_role` har `execute` på.
+
+| Tabell | Nøkkel | Innhold |
+|---|---|---|
+| `rollup_hourly` | `(project_id, hour)` | `pageviews`, `visits`, `requests`, `bytes_out`, `errors_4xx`, `errors_5xx`, `duration_sum_ms`, `bot_requests` |
+| `visitors_daily` | `(project_id, day, visitor)` | `visitor` = sha256(dagssalt ‖ prosjekt ‖ IP ‖ UA), 32 byte |
+| `rollup_dim` | `(project_id, day, dim, value)` | `hits` per toppside, henviser, nettleser, OS, enhet og land |
+
+Modellen er **ferdig aggregert**. Rå treff lagres ikke i det hele tatt: på en
+delt VPS er forskjellen mellom «les 30 ferdige rader» og «`count(*)` over fire
+millioner» forskjellen på om Postgres har headroom til resten av plattformen.
+
+Funksjonene:
+
+- `analytics_ingest_batch(payload jsonb)` – tar imot en hel flush fra ingesten.
+  Nye besøk telles ved at `on conflict do nothing ... returning` på
+  `visitors_daily` gir tilbake nøyaktig de hashene vi ikke hadde sett i dag.
+  Det gjør `visits` korrekt uansett hvor mange ganger backend startes på nytt.
+- `analytics_summary(project, from, to, unit, limit, tz)` – hele dashboardfanen
+  i ett kall. `unit` går gjennom en allowlist før `date_trunc`, og bøttene
+  regnes i norsk tid slik at «i dag» ikke starter kl. 01:00.
+- `analytics_prune(visitor_days, rollup_days, dim_keep)` – sletter etter
+  lagringsbegrensning og folder halen i `rollup_dim` inn i `(annet)`.
+
+`visitor`-hashen er anonym, ikke bare pseudonym: saltet lever kun i minnet til
+backend og roterer ved døgnskiftet, og IP-en lagres aldri. Prisen er at unike
+besøkende over flere dager blir *summen av daglige unike* – samme kompromiss som
+Plausible og Umami gjør.
 
 ## Migrasjoner
 

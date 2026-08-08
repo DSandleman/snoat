@@ -1,5 +1,6 @@
 // Custom Vite config wrapper
 // includes: TanStack devtools, tanstackStart, viteReact, tailwindcss, tsConfigPaths, nitro, etc.
+// @ts-ignore
 import { defineConfig } from "./vite-config.js";
 
 export default defineConfig({

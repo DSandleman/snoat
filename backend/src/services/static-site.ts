@@ -124,6 +124,11 @@ export async function publishStaticSite(
     );
   }
 
+  // Ingen sporingskode skrives inn i filene her. Caddy serverer dem uendret,
+  // og statistikken hentes ut av access-loggen i stedet – se
+  // `services/analytics-ingest.ts`. Det som ligger i katalogen er nøyaktig det
+  // kunden bygget.
+
   logs.write(`${files} filer (${formatBytes(bytes)}) klare til servering.`);
 
   return destination;

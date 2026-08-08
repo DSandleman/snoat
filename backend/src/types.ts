@@ -10,6 +10,7 @@ export interface Project {
   user_id: string;
   /** URL-vennlig slug – blir subdomenet `<name>.snoat.localhost`. */
   name: string;
+  custom_domain: string | null;
   repo_url: string;
   build_command: string | null;
   env_vars: Record<string, string> | null;
@@ -25,8 +26,53 @@ export interface Project {
    * inn som URL – de klones uten autentisering.
    */
   github_installation_id: number | null;
+  /**
+   * Når brukeren stoppet prosjektet. NULL = kjører, eller skal kjøre.
+   *
+   * Uten denne kolonnen var et stopp usynlig i dashboardet: statusen der utledes
+   * av `deployments.status`, og en stopp rører ingen deployment.
+   */
+  stopped_at: string | null;
+  /** Planen prosjektet kjører på ('free', 'pro', 'business'). */
+  plan?: SubscriptionTier;
   created_at: string;
 }
+
+/**
+ * Svaret fra `public.analytics_summary()`.
+ *
+ * Speiler `jsonb_build_object`-kallene i migrasjon 0008. Endres formen der,
+ * må den endres her – TypeScript kan ikke se inn i SQL-funksjonen.
+ */
+export interface AnalyticsSummary {
+  totals: {
+    /** Svar med Content-Type text/html. Assets og API-kall teller ikke. */
+    pageviews: number;
+    /** Besøk som startet i perioden – nye besøkende-hasher for døgnet. */
+    visits: number;
+    requests: number;
+    bytes_out: number;
+    errors_4xx: number;
+    errors_5xx: number;
+    /** Holdes utenfor alle tallene over; med her for å kunne kalibrere filteret. */
+    bot_requests: number;
+    avg_duration_ms: number;
+  };
+  /** Summen av daglige unike – ikke unike personer over flere døgn. Se 0008. */
+  visitors: number;
+  series: Array<{
+    /** Bøttens start som ISO-tidspunkt, beregnet i norsk tid. */
+    t: string;
+    pageviews: number;
+    visits: number;
+    requests: number;
+    errors: number;
+  }>;
+  dims: Partial<Record<AnalyticsDimension, Array<{ value: string; hits: number }>>>;
+  unit: string;
+}
+
+export type AnalyticsDimension = "path" | "referrer" | "browser" | "os" | "device" | "country";
 
 /** Kobling mellom en Snoat-bruker og en GitHub App-installasjon. */
 export interface GithubInstallation {
@@ -45,16 +91,87 @@ export interface Deployment {
   commit_hash: string | null;
   logs: string;
   url: string | null;
+  /** Hvor lenge bygget kjørte. NULL mens det pågår, og for rader fra før 0004. */
+  duration_ms: number | null;
   created_at: string;
+}
+
+export type SubscriptionTier = "free" | "pro" | "business";
+
+export type SubscriptionStatus =
+  | "active"
+  | "trialing"
+  | "past_due"
+  | "unpaid"
+  | "canceled"
+  | "incomplete";
+
+/**
+ * Abonnementet til én bruker. Speiler `public.subscriptions` (migrasjon 0004).
+ *
+ * Ligger bevisst i sin egen tabell og ikke på `profiles`: `profiles` har en
+ * update-policy for eieren, og RLS er rad-nivå, så en `plan`-kolonne der kunne
+ * brukeren satt selv fra nettleseren.
+ */
+export interface Subscription {
+  user_id: string;
+  plan: SubscriptionTier;
+  status: SubscriptionStatus;
+  /** 'stripe' = kort og webhooks. 'invoice' = EHF-faktura, satt for hånd. */
+  source: "stripe" | "invoice";
+  stripe_customer_id: string | null;
+  stripe_subscription_id: string | null;
+  current_period_end: string | null;
+  delinquent_since: string | null;
+  cancel_at_period_end: boolean;
+  /**
+   * Faktureringsland (ISO-3166-1 alpha-2), hentet fra adressen i Stripe.
+   *
+   * Ikke det samme som visningsspråk. Dette er landet Stripe Tax regner avgift
+   * etter, og det eneste vi har som sier hvor kunden faktisk holder til.
+   */
+  billing_country: string | null;
+  /**
+   * Valutaen abonnementet faktureres i (ISO-4217 lowercase, som hos Stripe).
+   *
+   * ⚠️ Låst etter første faktura. Stripe knytter valutaen til kunden, ikke til
+   * abonnementet, så den kan ikke byttes uten en ny kunde. `resolveMarket()` i
+   * `services/markets.ts` lar derfor denne overstyre både språk og geografi.
+   */
+  currency: string | null;
+  /** Om kunden oppga et mva-/organisasjonsnummer i kassen. */
+  customer_kind: "individual" | "business" | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Maskinlesbar identifikasjon av en feil, til bruk i frontend.
+ *
+ * `message` på `DeployError` er norsk og går i loggen. Den er ubrukelig for et
+ * engelsk dashboard, så feil kunden skal *se* bærer i tillegg en `code` som
+ * slås opp i `errors`-seksjonen av oversettelsene, med `params` interpolert inn.
+ */
+export interface ErrorDetail {
+  code: string;
+  params?: Record<string, string | number>;
 }
 
 /** Feil vi selv kaster i pipelinen, med et menneskelig lesbart steg. */
 export class DeployError extends Error {
+  /**
+   * Satt kun på feil som er ment for kunden. Interne feil («containeren startet
+   * ikke») har ingen kode: de skal leses av oss i loggen, ikke oversettes.
+   */
+  readonly detail: ErrorDetail | null;
+
   constructor(
     readonly step: string,
     message: string,
+    detail?: ErrorDetail,
   ) {
     super(message);
     this.name = "DeployError";
+    this.detail = detail ?? null;
   }
 }

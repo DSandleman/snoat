@@ -17,9 +17,19 @@ interface DnsRecord {
   description: string;
 }
 
-export function DnsSettingsTab({ project, isLive }: { project: Project; isLive: boolean }) {
+export function DnsSettingsTab({ 
+  project, 
+  isLive,
+  onSaveDomain,
+  isSaving
+}: { 
+  project: Project; 
+  isLive: boolean;
+  onSaveDomain: (domain: string | null) => void;
+  isSaving: boolean;
+}) {
   const { t } = useTranslation();
-  const [domain, setDomain] = useState("");
+  const [domain, setDomain] = useState(project.custom_domain || "");
   const [mode, setMode] = useState<DomainMode>("root");
   const [subdomain, setSubdomain] = useState("app");
 
@@ -29,6 +39,7 @@ export function DnsSettingsTab({ project, isLive }: { project: Project; isLive: 
   const sub = normalizeHost(subdomain) || "app";
 
   const hasDomain = Boolean(cleanDomain);
+  const isSavedDomain = project.custom_domain === cleanDomain;
 
   const records: DnsRecord[] =
     mode === "root"
@@ -61,21 +72,40 @@ export function DnsSettingsTab({ project, isLive }: { project: Project; isLive: 
           },
         ];
 
+  const isFreePlan = (project.plan ?? "free") === "free";
+
   return (
     <div className="flex flex-col gap-6">
+      {/* Sperre for Free-plan */}
+      {isFreePlan && (
+        <div className="floating-card p-6 md:p-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-primary/30 bg-primary/5">
+          <div className="flex items-center gap-4">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-primary">
+              <span className="material-symbols-outlined icon-md">lock</span>
+            </div>
+            <div>
+              <h2 className="font-headline text-headline-sm text-on-surface">{t("project_plan.gated_dns_title")}</h2>
+              <p className="font-body text-body-md text-on-surface-variant mt-0.5">{t("project_plan.gated_dns_desc")}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Prosjektets nåværende status og Snoat-adresse */}
       <div className="floating-card p-6 md:p-8 flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span className="font-label text-label-md text-on-surface-variant">{t("dns.default_address")}</span>
-            <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-label text-xs ${
-                isLive ? "bg-secondary/15 text-secondary" : "bg-surface-variant/40 text-on-surface-variant"
-              }`}
-            >
-              <span className={`h-1.5 w-1.5 rounded-full ${isLive ? "animate-pulse bg-secondary" : "bg-on-surface-variant/60"}`} />
-              {isLive ? t("dns.status_live") : t("dns.status_not_deployed")}
-            </span>
+            {isLive ? (
+              <span className="font-label text-label-md text-secondary underline decoration-secondary underline-offset-4 font-semibold px-1">
+                {t("dns.status_live")}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-variant/40 text-on-surface-variant px-2.5 py-0.5 font-label text-xs">
+                <span className="h-1.5 w-1.5 rounded-full bg-on-surface-variant/60" />
+                {t("dns.status_not_deployed")}
+              </span>
+            )}
           </div>
 
           <a
@@ -106,13 +136,38 @@ export function DnsSettingsTab({ project, isLive }: { project: Project; isLive: 
         <div className="flex flex-col gap-4 md:flex-row md:items-center justify-between">
           <div className="flex flex-1 flex-col gap-2 max-w-md">
             <label className="font-label text-label-md text-on-surface-variant">{t("dns.domain_label")}</label>
-            <input
-              type="text"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              placeholder="dittdomene.no"
-              className="rounded-xl bg-surface-container px-4 py-3 font-mono text-sm text-on-surface outline-none ring-primary/60 placeholder:text-on-surface-variant/40 focus:ring-2"
-            />
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+                disabled={isFreePlan}
+                placeholder={isFreePlan ? t("project_plan.gated_dns_title") : "dittdomene.no"}
+                className="flex-1 rounded-xl bg-surface-container px-4 py-3 font-mono text-sm text-on-surface outline-none ring-primary/60 placeholder:text-on-surface-variant/40 focus:ring-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              />
+              <button
+                type="button"
+                onClick={() => onSaveDomain(cleanDomain || null)}
+                disabled={isFreePlan || isSaving || (isSavedDomain && !cleanDomain) || (!cleanDomain && !project.custom_domain)}
+                className={`shrink-0 rounded-xl px-4 py-3 font-label text-sm font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed ${
+                  isSaving
+                    ? "bg-surface-variant/40 text-on-surface-variant cursor-wait"
+                    : isSavedDomain && cleanDomain
+                      ? "bg-secondary/15 text-secondary"
+                      : cleanDomain
+                        ? "bg-primary text-on-primary hover:bg-primary/90"
+                        : "bg-error/15 text-error hover:bg-error/25"
+                }`}
+              >
+                {isSaving 
+                  ? t("common.saving", "Lagrer...") 
+                  : isSavedDomain && cleanDomain 
+                    ? t("common.saved", "Lagret") 
+                    : cleanDomain 
+                      ? t("common.save", "Lagre") 
+                      : t("common.remove", "Fjern")}
+              </button>
+            </div>
           </div>
 
           {mode === "subdomain" && (
